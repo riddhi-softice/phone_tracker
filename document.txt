@@ -1,0 +1,14 @@
+1. add jwt Auth for apis
+-> https://dev.to/solomononuche/how-to-implement-jwt-auth-in-laravel-9-2mlm
+
+
+2. 2fa Library
+composer require pragmarx/google2fa-laravel --ignore-platform-reqs
+
+composer require simplesoftwareio/simple-qrcode --ignore-platform-reqs
+composer require endroid/qr-code --ignore-platform-reqs
+
+
+3. yajra datatables
+composer require yajra/laravel-datatables-oracle:"^10.0"
+composer require yajra/laravel-datatables-oracle --ignore-platform-reqs
