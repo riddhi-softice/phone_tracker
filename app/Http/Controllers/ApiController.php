@@ -789,7 +789,9 @@ class ApiController extends BaseController
         try {
             $request->validate([
                 'user_id' => 'required', // child user id
-                'date' => 'required',    // date - filter data
+                // 'date' => 'required',    // date - filter data
+                // 'start_date' => 'required',    // date - filter data
+                // 'end_date' => 'required',    // date - filter data
             ]);
             $user = Auth::user();
             if (!$user) {
@@ -799,13 +801,34 @@ class ApiController extends BaseController
           
             // Retrieve user's location history
             $query = DB::table('location_history as lh')
-                ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
-                ->where('lh.user_id', $request->user_id)                // Filter by child user id
-                ->whereDate('lh.datetime', $request->date)              // Filter by date only
-                ->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
-            if($history_date){
-                $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
-            }
+                ->join('users as u', 'lh.user_id', '=', 'u.id')          // Join the users table
+                ->where('lh.user_id', $request->user_id);                // Filter by child user id
+
+                // if($request->date){
+                //     $query->whereDate('lh.datetime', $request->date);              // Filter by date only
+                // }
+                // if($request->start_date && $request->end_date){
+                //     $query->whereBetween('lh.datetime', [$request->start_date, $request->end_date]); // Filter by datetime range
+                // }
+
+                # YYYY-DD-MM HH:MM:SS formate
+                if ($request->date) {
+                    // Convert ISO 8601 date to Y-m-d format (Extract only the date part)
+                    $date = Carbon::parse($request->date)->format('Y-m-d');
+                    $query->whereDate('lh.datetime', $date);
+                }
+                
+                if ($request->start_date && $request->end_date) {
+                    // Convert ISO 8601 datetime to MySQL Y-m-d H:i:s format
+                    $startDate = Carbon::parse($request->start_date)->format('Y-m-d H:i:s');
+                    $endDate = Carbon::parse($request->end_date)->format('Y-m-d H:i:s');
+                
+                    $query->whereBetween('lh.datetime', [$startDate, $endDate]);
+                }
+                $query->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
+                if($history_date){
+                    $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
+                }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
             if ($latestHistory->isEmpty()) {
                 return $this->sendError('No data found for this user and date.', 401);
