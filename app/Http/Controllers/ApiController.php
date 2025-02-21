@@ -19,6 +19,7 @@ use App\Jobs\SendNotificationJob;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Http;
+use Carbon\Carbon;
 define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
@@ -32,7 +33,7 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('Invalid token, User not found.', 401);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
             $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted' => 0])->pluck('history_remove_date')->first();
           
@@ -45,14 +46,30 @@ class ApiController extends BaseController
                 $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
             }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
+            // if ($latestHistory->isEmpty()) {
+            //     $message = "Unfortunately, there is no data available for this user today.";
+            //     return $this->sendError($message, 401);
+            // }
             if ($latestHistory->isEmpty()) {
-                return $this->sendError('No data found for this user and date.', 401);
+                $date = Carbon::parse($request->date);
+                $today = Carbon::today();
+                $yesterday = Carbon::yesterday();
+
+                if ($date->equalTo($today)) {
+                    $day = "Today";
+                } elseif ($date->equalTo($yesterday)) {
+                    $day = "Yesterday";
+                } else {
+                    $day = $date->format('l');
+                }
+                $message = "Unfortunately, there is no data available for this user ".$day;
+                return $this->sendError($message, 401);
             }
+            
             # Initialize variables to track total distance and total time
             $totalDistance = 0;
             $startTime = null;
             $endTime = null;
-
             # Map through the location data
             $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
 
@@ -150,7 +167,7 @@ class ApiController extends BaseController
                 $encryptedResponse = $this->encryptData($request->all());
                 return $this->sendResponse($encryptedResponse, 'Application is up-to-date!');
             }
-            return $this->sendError('Oops! Please update the application.');
+            return $this->sendError('Please update the application. Thank you!');
         } catch (ValidationException $e) {
            return $this->sendError($e->validator->errors()->first(), 422);
         } catch (\Exception $e) {
@@ -165,18 +182,15 @@ class ApiController extends BaseController
             'join_type' => 'required',
             'join_data' => 'required',
         ]);
-
         $joinCode = $this->processJoinCode($request->join_data, $request->join_type);
-
         $parentUser = User::where('join_code', $joinCode)->first();
         if (!$parentUser) {
-            return $this->sendError('Oops! Invalid join code.');
+            return $this->sendError('Oops! The join code you entered is invalid.');
         }
-
         $response = ['parent_user_id'=>$parentUser->id,'device_name'=>$parentUser->device_name];
 
         $encryptedResponse = $this->encryptData($response);
-        return $this->sendResponse($encryptedResponse, 'User join data verify successfully.');
+        return $this->sendResponse($encryptedResponse, "The user's join data has been successfully verified.");
     }
 
     # with well-structure with location data store # WITHOUT VERIFY JOIN DATA # queue notification
@@ -193,7 +207,7 @@ class ApiController extends BaseController
             }
             // Step 4: Check if the child user is already joined
             if ($this->isUserAlreadyJoined($childUser->id, $parentUserId)) {
-                return $this->sendError('User already joined.');
+                return $this->sendError('The user has already joined.');
             }
             // Step 5: Join the user and respond
             $joinData = $this->createJoinRecord($childUser->id, $parentUserId, $request->device_name, $request->join_type,$request->today_date);
@@ -204,11 +218,11 @@ class ApiController extends BaseController
             $accuracy = number_format($request->accuracy, 7, '.', '');
 
             if ($accuracy > $maxValue || $accuracy < $minValue) {
-                Log::info('Accuricy out of range,from join user: ', ['accuracy' => $accuracy]);
+                // Log::info('Accuricy out of range,from join user: ', ['accuracy' => $accuracy]);
                 $accuracy = '0.0000000';  // Default value for accuracy
             }
             if ($course > $maxValue || $course < $minValue) {
-                Log::info('Course out of range,from join user: ', ['course' => $course]);
+                // Log::info('Course out of range,from join user: ', ['course' => $course]);
                 $course = '0.0000000';  // Default value for course
             }
             # Prepare location data for insertion
@@ -284,7 +298,7 @@ class ApiController extends BaseController
             // Step 4: Validate orderId
             if (!isset($orderId) || strpos($orderId, 'GPA') !== 0) {
                 $payment_status = "Failed";
-                $reason = "Order ID is invalid";
+                $reason = "The order ID provided is not valid.";
                 UserPurchaseModel::find($p_id)->update(['payment_status' => $payment_status, 'reason' => $reason]);
                 return $this->sendError($reason, 400);
             }
@@ -292,7 +306,7 @@ class ApiController extends BaseController
             // Step 5: Validate packageName
             if ($packageName !== env('PACKAGE_NAME')) { // Assuming PACKAGE_NAME is defined in the environment file
                 $payment_status = "Failed";
-                $reason = "Invalid package name";
+                $reason = "The package name is invalid";
                 UserPurchaseModel::find($p_id)->update(['payment_status' => $payment_status, 'reason' => $reason]);
                 return $this->sendError($reason, 400);
             }
@@ -304,18 +318,18 @@ class ApiController extends BaseController
             switch ($purchaseState) {
                 case 0:
                     $payment_status = "Success";
-                    $reason = "Payment Successful";
+                    $reason = "Payment was successful.";
                     break;
                 case 1:
                     $payment_status = "Failed";
-                    $reason = "Payment Cancelled";
+                    $reason = "The payment has been canceled.";
                     break;
                 case 2:
                     $payment_status = "Pending";
-                    $reason = "Payment Pending";
+                    $reason = "Payment is currently pending.";
                     break;
                 default:
-                    return $this->sendError('Invalid purchase state', 400);
+                    return $this->sendError('The purchase state is invalid.', 400);
             }
 
             // Step 6: Update payment status and reason in one go
@@ -326,7 +340,7 @@ class ApiController extends BaseController
 
             // Step 7: Return success or failure response based on the state
             if ($payment_status === 'Success') {
-                return $this->sendResponse([], 'Payment Successful');
+                return $this->sendResponse([], 'Payment was successful.');
             } else {
                 return $this->sendError($reason, 400);
             }
@@ -431,7 +445,7 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError("User not found", 404);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located", 404);
             }
 
             $locations = $request->input('locations');
@@ -517,9 +531,8 @@ class ApiController extends BaseController
             // Step 2: Get authenticated user
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('User not authenticated', 401);
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
-
             // Step 3: Fetch the located user history with parent user data in a single query
             /* $locatedUsers = JoinUserModel::with('parentUser')
                 ->where([
@@ -568,7 +581,7 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('User not authenticated', 401);
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
             // Parse geojson into a valid polygon format for storage
             // $geojson = json_encode($request['geojson']);
@@ -604,20 +617,18 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('User not authenticated', 401);
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
-            $data = JoinUserModel::where(['parent_user_id'=>$request->parent_user_id, 'child_user_id'=>$request->child_user_id,'is_deleted'=>0])->first();
+            $data = JoinUserModel::where(['parent_user_id'=>$request->parent_user_id, 'child_user_id'=>$request->child_user_id,'is_deleted'=> 0])->first();
             if($data){
                 $data->update(['is_deleted'=>1]);
-
-                $join_data = JoinUserModel::where(['child_user_id'=>$request->child_user_id,'is_deleted'=>0])->count();
+                $join_data = JoinUserModel::where(['child_user_id'=>$request->child_user_id,'is_deleted'=> 0])->count();
                 if($join_data == 0){
                     LocationHistoryModel::where(['user_id'=>$request->child_user_id])->delete();
                 }
-
-                return $this->sendResponse([], 'User disconnect successfully');
+                return $this->sendResponse([], 'The user has successfully disconnected.');
             } else {
-                return $this->sendError('User not connected', 400);
+                return $this->sendError('User is currently not connected.', 400);
             }
         } catch (ValidationException $e) {
            return $this->sendError($e->validator->errors()->first(), 422);
@@ -636,20 +647,18 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('User not authenticated', 401);
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
             if($user->id == $request->child_user_id) {
-                return $this->sendError('Users are unable to delete their data.', 401);
+                return $this->sendError('The user is unable to delete their data.', 401);
             }
-
             # manage location history in join table
             $data = JoinUserModel::where(['parent_user_id'=>$user->id, 'child_user_id'=>$request->child_user_id,'is_deleted'=>0])->first();
             if ($data) {
-
                 $data->update(['location_history_status'=>'is_removed','history_remove_date'=>$request->today_date]);
                 return $this->sendResponse([], 'User location history remove successfully');
             } else {
-                return $this->sendError('Join user data not found', 400);
+                return $this->sendError('User is currently not connected', 400);
             }
         } catch (ValidationException $e) {
 
@@ -668,7 +677,7 @@ class ApiController extends BaseController
 
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('User not authenticated', 401);
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
 
            $locatedUsers = DB::table('join_user as j')
@@ -712,7 +721,7 @@ class ApiController extends BaseController
     {
         $user = Auth::user();
         if (!$user) {
-            return $this->sendError('Invalid token,User not found.', 401);
+            return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located.', 401);
         }
         try {
             $join_user_ids = DB::table('join_user')->where(['parent_user_id'=>$user->id,'is_deleted' => 0])->pluck('child_user_id')->toArray();
@@ -795,7 +804,7 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('Invalid token, User not found.', 401);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
             $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=>0])->pluck('history_remove_date')->first();
           
@@ -804,35 +813,52 @@ class ApiController extends BaseController
                 ->join('users as u', 'lh.user_id', '=', 'u.id')          // Join the users table
                 ->where('lh.user_id', $request->user_id);                // Filter by child user id
 
-                // if($request->date){
-                //     $query->whereDate('lh.datetime', $request->date);              // Filter by date only
-                // }
-                // if($request->start_date && $request->end_date){
-                //     $query->whereBetween('lh.datetime', [$request->start_date, $request->end_date]); // Filter by datetime range
-                // }
+                if($request->date){
+                    $query->whereDate('lh.datetime', $request->date);              // Filter by date only
+                }
+                if($request->start_date && $request->end_time){
+                    $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); // Filter by datetime range
+                }
 
                 # YYYY-DD-MM HH:MM:SS formate
-                if ($request->date) {
-                    // Convert ISO 8601 date to Y-m-d format (Extract only the date part)
-                    $date = Carbon::parse($request->date)->format('Y-m-d');
-                    $query->whereDate('lh.datetime', $date);
-                }
+                // if ($request->date) {
+                //     // Convert ISO 8601 date to Y-m-d format (Extract only the date part)
+                //     $date = Carbon::parse($request->date)->format('Y-m-d');
+                //     $query->whereDate('lh.datetime', $date);
+                // }
                 
-                if ($request->start_date && $request->end_date) {
-                    // Convert ISO 8601 datetime to MySQL Y-m-d H:i:s format
-                    $startDate = Carbon::parse($request->start_date)->format('Y-m-d H:i:s');
-                    $endDate = Carbon::parse($request->end_date)->format('Y-m-d H:i:s');
+                // if ($request->start_date && $request->end_time) {
+                //     // Convert ISO 8601 datetime to MySQL Y-m-d H:i:s format
+                //     $startDate = Carbon::parse($request->start_date)->format('Y-m-d H:i:s');
+                //     $endDate = Carbon::parse($request->end_time)->format('Y-m-d H:i:s');
                 
-                    $query->whereBetween('lh.datetime', [$startDate, $endDate]);
-                }
+                //     $query->whereBetween('lh.datetime', [$startDate, $endDate]);
+                // }
                 $query->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
                 if($history_date){
                     $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
                 }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
+            // if ($latestHistory->isEmpty()) {
+            //     return $this->sendError('No data found for this user and date.', 401);
+            // }
+            
             if ($latestHistory->isEmpty()) {
-                return $this->sendError('No data found for this user and date.', 401);
-            }
+                // Parse the date and set it to UTC
+                $date = Carbon::parse($request->start_date)->setTimezone('UTC');
+                // Get today's and yesterday's date in UTC
+                $today = Carbon::today('UTC');
+                $yesterday = Carbon::yesterday('UTC');          
+                if ($date->isSameDay($today)) {
+                    $day = "Today";
+                } elseif ($date->isSameDay($yesterday)) {
+                    $day = "Yesterday";
+                } else {
+                    $day = $date->format('l'); // Returns weekday name (e.g., Monday, Tuesday)
+                }
+                $message = "Unfortunately, there is no data available for this user on " . $day;
+                return $this->sendError($message, 401);
+            }            
             # Initialize variables to track total distance and total time
             $totalDistance = 0;
             $startTime = null;
@@ -887,7 +913,6 @@ class ApiController extends BaseController
                 } else {
                     $item->hold_status = 'off'; # Default for the first record
                 }
-
                 return [
                     'user_id'      => $item->user_id,
                     'phone_battery_status'  => $item->phone_battery_status,
@@ -915,12 +940,10 @@ class ApiController extends BaseController
                 'zone_data'     => $zone,
                 'user_data'     => $result
             ];
-
             // Encrypt and send the response
             $encryptedResponse = $this->encryptData($response);
             return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
         } catch (ValidationException $e) {
-
            return $this->sendError($e->validator->errors()->first(), 422);
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
@@ -932,7 +955,7 @@ class ApiController extends BaseController
     {
         $user = Auth::user();
         if (!$user) {
-            return $this->sendError('Invalid token,User not found.', 401);
+            return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
         }
         try {
             $join_user_ids = DB::table('join_user')->where('parent_user_id', $user->id)->pluck('child_user_id')->toArray();
@@ -990,7 +1013,7 @@ class ApiController extends BaseController
 
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError('Invalid token, User not found.', 401);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
 
             // Retrieve user's location history
