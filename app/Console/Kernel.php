@@ -18,9 +18,6 @@ class Kernel extends ConsoleKernel
              ->runInBackground();
     }
     
-    
-    
-
     protected function commands()
     {
         $this->load(__DIR__.'/Commands');

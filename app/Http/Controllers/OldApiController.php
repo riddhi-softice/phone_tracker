@@ -408,4 +408,67 @@ class ApiController extends BaseController
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
     }
+
+    
+    public function manage_user_geojson(Request $request)
+    {
+        try {
+            $request->validate([
+                'zone_km' => 'required',
+                'geojson' => 'required',
+                'noti_status' => 'required',
+                'child_user_id' => 'required',
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
+            }
+            // Parse geojson into a valid polygon format for storage
+            // $geojson = json_encode($request['geojson']);
+
+            $data = $request->all();
+            $data['parent_user_id'] = $user->id;
+
+            // Find existing record or create a new one
+            $geoJsonRecord  = GeoJson::where(['parent_user_id'=>$user->id,'child_user_id'=> $request->child_user_id])->first();
+             if($geoJsonRecord){
+                $geoJsonRecord->update($data);
+            }else{
+                $geoJsonRecord  = GeoJson::create($data);
+            }
+
+            $encryptedResponse = $this->encryptData($geoJsonRecord);
+            return $this->sendResponse($encryptedResponse, 'User zone added successfully');
+        } catch (ValidationException $e) {
+
+           return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
+    }
+
+    // manage_user_geojson body params
+    // {
+    //     "zone_km": "11.4",
+    //     "geojson": {
+    //         "type": "Polygon",
+    //         "coordinates": [
+    //             [
+    //                 [125.6, 10.1],
+    //                 [125.601, 10.2],
+    //                 [125.602, 10.101],
+    //                 [125.601, 10.102],
+    //                 [125.6, 10.103],
+    //                 [125.599, 10.102],
+    //                 [125.598, 10.101],
+    //                 [125.599, 10.1],
+    //                 [125.6, 10.1]
+    //             ]
+    //         ]
+    //     },
+    //     "noti_status": "on",
+    //     "child_user_id": 8
+    // }
+    
+
 }

@@ -18,11 +18,11 @@ return new class extends Migration
             $table->unsignedBigInteger('parent_user_id');
             $table->unsignedBigInteger('child_user_id');
             $table->decimal('zone_km', 8, 2);
-            $table->decimal('user_lattitude', 10, 7);
-            $table->decimal('user_longitude', 10, 7);
+            $table->decimal('zone_lattitude', 10, 7);
+            $table->decimal('zone_longitude', 10, 7);
             $table->enum('noti_status', ['on','off'])->default('on');
+            $table->enum('zone_type', ['safe_zone','red_zone'])->default('safe_zone');
             $table->timestamps();
-
             // $table->foreign('user_id')->references('id')->on('users')->onDelete('cascade');
         });
     }

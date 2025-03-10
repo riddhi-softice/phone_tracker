@@ -29,7 +29,9 @@ class ApiController extends BaseController
         try {
             $request->validate([
                 'user_id' => 'required', // child user id
-                'date' => 'required',    // date - filter data
+                // 'date' => 'required',    // date - filter data
+                // 'start_date' => 'required',  // date - filter data
+                // 'end_date' => 'required',    // date - filter data
             ]);
             $user = Auth::user();
             if (!$user) {
@@ -37,19 +39,32 @@ class ApiController extends BaseController
             }
             $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted' => 0])->pluck('history_remove_date')->first();
           
+            // $query = DB::table('location_history as lh')
+            //     ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
+            //     ->where('lh.user_id', $request->user_id)                // Filter by child user id
+            //     ->whereDate('lh.datetime', $request->date)              // Filter by date only
+            //     ->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
+            // if($history_date){
+            //     $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
+            // }
+            // $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
+            
             $query = DB::table('location_history as lh')
-                ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
-                ->where('lh.user_id', $request->user_id)                // Filter by child user id
-                ->whereDate('lh.datetime', $request->date)              // Filter by date only
-                ->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
+                ->join('users as u', 'lh.user_id', '=', 'u.id')          
+                ->where('lh.user_id', $request->user_id);                // Filter by child user id
+
+            if($request->date){
+                $query->whereDate('lh.datetime', $request->date);        // Filter by date only
+            }
+            if($request->start_date && $request->end_time){
+                $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); // Filter by datetime range
+            }
+            $query->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
             if($history_date){
-                $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
+                $query->where('lh.datetime','>=', $history_date);         // Filter by remove history date
             }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
-            // if ($latestHistory->isEmpty()) {
-            //     $message = "Unfortunately, there is no data available for this user today.";
-            //     return $this->sendError($message, 401);
-            // }
+           
             if ($latestHistory->isEmpty()) {
                 $date = Carbon::parse($request->date);
                 $today = Carbon::today();
@@ -63,7 +78,7 @@ class ApiController extends BaseController
                     $day = $date->format('l');
                 }
                 $message = "Unfortunately, there is no data available for this user ".$day;
-                return $this->sendError($message, 401);
+                return $this->sendError($message, 404);
             }
             
             # Initialize variables to track total distance and total time
@@ -137,8 +152,7 @@ class ApiController extends BaseController
             })->filter(function ($item) {
                 return $item['hold_status'] === 'on';  // Filter to include only 'on' hold_status
             })->values()->all();
-
-            $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
+          
             $timeSpent = $startTime->diff($endTime);  
             $response = [
                 'total_distance'=> round($totalDistance, 2) . ' KM',            // Total distance traveled in KM
@@ -185,7 +199,7 @@ class ApiController extends BaseController
         $joinCode = $this->processJoinCode($request->join_data, $request->join_type);
         $parentUser = User::where('join_code', $joinCode)->first();
         if (!$parentUser) {
-            return $this->sendError('Oops! The join code you entered is invalid.');
+            return $this->sendError('Oops! The join code you entered is invalid.',400);
         }
         $response = ['parent_user_id'=>$parentUser->id,'device_name'=>$parentUser->device_name];
 
@@ -203,11 +217,11 @@ class ApiController extends BaseController
             $childUser = Auth::user();
 
             if ($childUser->id == $parentUserId) {
-                return $this->sendError("The user cannot join it themselves.");
+                return $this->sendError("The user cannot join it themselves.",400);
             }
             // Step 4: Check if the child user is already joined
             if ($this->isUserAlreadyJoined($childUser->id, $parentUserId)) {
-                return $this->sendError('The user has already joined.');
+                return $this->sendError('The user has already joined.',400);
             }
             // Step 5: Join the user and respond
             $joinData = $this->createJoinRecord($childUser->id, $parentUserId, $request->device_name, $request->join_type,$request->today_date);
@@ -445,14 +459,14 @@ class ApiController extends BaseController
             ]);
             $user = Auth::user();
             if (!$user) {
-                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located", 404);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located", 401);
             }
 
             $locations = $request->input('locations');
             foreach ($locations as $location) {
 
-                $maxValue = 9999999999.9999999;  // For DECIMAL(17,7), this is the max value
-                $minValue = -9999999999.9999999; // For DECIMAL(17,7), this is the min value
+                $maxValue = 9999999999.9999999;  
+                $minValue = -9999999999.9999999; 
                 $course = number_format($location['course'], 7, '.', '');
                 $accuracy = number_format($location['accuracy'], 7, '.', '');
 
@@ -481,34 +495,60 @@ class ApiController extends BaseController
                 $join_status = JoinUserModel::where(['child_user_id' => $user->id, 'is_deleted' => 0])->get();
                 foreach ($join_status as $key => $value1) {
                     $value1->update(['phone_battery_status' => $location['phone_battery_status']]);
-                }
-
+                }               
+                
                 # OUTSIDE ZONE NOTIFICATION
-                $geojsonDataList = GeoJson::where('child_user_id', $user->id)->where('noti_status', 'on')->get();
-                if ($geojsonDataList->isNotEmpty()) {
-                    foreach ($geojsonDataList as $geojsonData) {
-                        $geojsonString = is_array($geojsonData->geojson) ? json_encode($geojsonData->geojson) : $geojsonData->geojson;
+                $safeZones = SafeZoneModel::where(['child_user_id' => $user->id,'noti_status' => 'on'])->get();
+                if ($safeZones->isNotEmpty()) {
+                    $parentUserId = []; 
 
-                        $geometry = DB::selectOne("
-                            SELECT ST_Contains(
-                                ST_GeomFromGeoJSON(?),
-                                ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'))
-                            ) AS is_inside", [$geojsonString, $location['longitude'], $location['lattitude']]);
-
-                        if (!$geometry->is_inside) {
-                            $parentUserId = $geojsonData->parent_user_id; // Get the parent user ID
-                            $title = $user->name . " is going outside the restricted area";
-                            $noti_data = [
-                                'noti_date' => $location['today_date'],
-                                'msg' => "Going outside the restricted area",
-                                'noti_type' => "outside_zone",
-                            ];
-                            // Dispatch notification for each parent user
-                            SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
-                        }
+                    foreach ($safeZones as $safeZone) {
+                        $distance = $this->haversineGreatCircleDistanceZone(
+                            $safeZone->zone_lattitude,  
+                            $safeZone->zone_longitude,  
+                            $location['lattitude'],
+                            $location['longitude']
+                        );
+                        // if ($distance > ($safeZone->zone_meter)) {
+                            $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
+                        // }
                     }
+                    $title = $user->name . " is going outside the restricted area";
+                    $noti_data = [
+                        'noti_date' => $location['today_date'],
+                        'msg' => "Going outside the restricted area",
+                        'noti_type' => "outside_zone",
+                    ];
+                    // $this->zone_noti($user, $parentUserId, $title, $noti_data);
+                    SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
                 }
             }
+
+                // $geojsonDataList = GeoJson::where('child_user_id', $user->id)->where('noti_status', 'on')->get();
+                // if ($geojsonDataList->isNotEmpty()) {
+                //     foreach ($geojsonDataList as $geojsonData) {
+                //         $geojsonString = is_array($geojsonData->geojson) ? json_encode($geojsonData->geojson) : $geojsonData->geojson;
+
+                //         $geometry = DB::selectOne("
+                //             SELECT ST_Contains(
+                //                 ST_GeomFromGeoJSON(?),
+                //                 ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'))
+                //             ) AS is_inside", [$geojsonString, $location['longitude'], $location['lattitude']]);
+
+                //         if (!$geometry->is_inside) {
+                //             $parentUserId = $geojsonData->parent_user_id; // Get the parent user ID
+                //             $title = $user->name . " is going outside the restricted area";
+                //             $noti_data = [
+                //                 'noti_date' => $location['today_date'],
+                //                 'msg' => "Going outside the restricted area",
+                //                 'noti_type' => "outside_zone",
+                //             ];
+                //             // Dispatch notification for each parent user
+                //             SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
+                //         }
+                //     }
+                // }
+
             # Calculate parent count
             $parent_count = JoinUserModel::where(['child_user_id' => $user->id, 'is_deleted' => 0])->count();
             $responseData['located_parent_user'] = $parent_count;
@@ -574,27 +614,26 @@ class ApiController extends BaseController
     {
         try {
             $request->validate([
-                'zone_km' => 'required',
-                'geojson' => 'required',
+                'zone_meter' => 'required',
                 'noti_status' => 'required',
                 'child_user_id' => 'required',
+                'zone_type' => 'required',
+                'zone_lattitude' => 'required',
+                'zone_longitude' => 'required',
             ]);
             $user = Auth::user();
             if (!$user) {
                 return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
-            // Parse geojson into a valid polygon format for storage
-            // $geojson = json_encode($request['geojson']);
-
             $data = $request->all();
             $data['parent_user_id'] = $user->id;
 
             // Find existing record or create a new one
-            $geoJsonRecord  = GeoJson::where(['parent_user_id'=>$user->id,'child_user_id'=> $request->child_user_id])->first();
-             if($geoJsonRecord){
+            $geoJsonRecord  = SafeZoneModel::where(['parent_user_id'=>$user->id,'child_user_id'=> $request->child_user_id])->first();
+            if($geoJsonRecord){
                 $geoJsonRecord->update($data);
             }else{
-                $geoJsonRecord  = GeoJson::create($data);
+                $geoJsonRecord  = SafeZoneModel::create($data);
             }
 
             $encryptedResponse = $this->encryptData($geoJsonRecord);
@@ -606,7 +645,7 @@ class ApiController extends BaseController
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
     }
-
+    
     # both user use api
     public function disconnect_user(Request $request)
     {
@@ -650,7 +689,7 @@ class ApiController extends BaseController
                 return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
             }
             if($user->id == $request->child_user_id) {
-                return $this->sendError('The user is unable to delete their data.', 401);
+                return $this->sendError('The user is unable to delete their data.', 400);
             }
             # manage location history in join table
             $data = JoinUserModel::where(['parent_user_id'=>$user->id, 'child_user_id'=>$request->child_user_id,'is_deleted'=>0])->first();
@@ -797,9 +836,9 @@ class ApiController extends BaseController
     {
         try {
             $request->validate([
-                'user_id' => 'required', // child user id
-                // 'date' => 'required',    // date - filter data
-                // 'start_date' => 'required',    // date - filter data
+                'user_id' => 'required',        // child user id
+                // 'date' => 'required',        // date - filter data
+                // 'start_date' => 'required',  // date - filter data
                 // 'end_date' => 'required',    // date - filter data
             ]);
             $user = Auth::user();
@@ -840,7 +879,7 @@ class ApiController extends BaseController
                 }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
             // if ($latestHistory->isEmpty()) {
-            //     return $this->sendError('No data found for this user and date.', 401);
+            //     return $this->sendError('No data found for this user and date.', 404);
             // }
             
             if ($latestHistory->isEmpty()) {
@@ -857,7 +896,7 @@ class ApiController extends BaseController
                     $day = $date->format('l'); // Returns weekday name (e.g., Monday, Tuesday)
                 }
                 $message = "Unfortunately, there is no data available for this user on " . $day;
-                return $this->sendError($message, 401);
+                return $this->sendError($message, 404);
             }            
             # Initialize variables to track total distance and total time
             $totalDistance = 0;
@@ -931,9 +970,10 @@ class ApiController extends BaseController
                 ];
             })->all();
 
-            $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
+            // $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
+            $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_meter','zone_lattitude','zone_longitude','zone_type')->first();
+
             $timeSpent = $startTime->diff($endTime);  // Calculate total time spent
-            // Return the response with total distance and time spent
             $response = [
                 'total_distance'=> round($totalDistance, 2) . ' KM',            // Total distance traveled in KM
                 'total_time'    => $timeSpent->format('%h hours %i minutes'),   // Total time spent in hours and minutes
@@ -1026,7 +1066,7 @@ class ApiController extends BaseController
                 ->get();
 
             if ($latestHistory->isEmpty()) {
-                return $this->sendError('No data found for this user and date.', 401);
+                return $this->sendError('No data found for this user and date.', 404);
             }
 
             // Initialize variables to track total distance and total time
@@ -1237,4 +1277,33 @@ class ApiController extends BaseController
         return $data['items'][0]['address']['label'] ?? "Address not found";
     }
 
+    private function zone_noti($childUser, $parentUserId, $title, $noti_data)
+    {
+        $parentUserIds = is_array($parentUserId) ? $parentUserId : [$parentUserId];
+
+        $notificationSendData['player_ids'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
+        $notificationSendData['notification_url'] = "";
+        $notificationSendData['notification_title'] = $title;
+        $notificationSendData['notification_description'] = $title;
+        $notificationSendData['notification_time'] = now(); // Laravel helper for the current timestamp
+        $notificationSendData['notification_image'] = $childUser->profile_pic ?? asset('public/assets/img/logo.png');
+
+        ApplicationNotificationModel::sendOneSignalNotificationSchedule($notificationSendData);
+        $sender_user_id = $childUser->id;
+        $noti_type = $noti_data['noti_type'];
+        $msg = $noti_data['msg'];
+        $noti_date = $noti_data['noti_date'];
+
+        $notificationData = [];
+        foreach ($parentUserIds as $receiver_user_id) {
+            $notificationData[] = [
+                'sender_user_id' => $sender_user_id,
+                'receiver_user_id' => $receiver_user_id,
+                'title' => $msg,
+                'noti_type' => $noti_type,
+                'noti_date' => $noti_date,
+            ];
+        }
+        DB::table('user_notifications')->insert($notificationData);
+    }
 }

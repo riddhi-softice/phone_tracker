@@ -31,14 +31,41 @@ class SendNotificationJob implements ShouldQueue
         $this->noti_data = $noti_data;
     }
 
-    /**
-     * Execute the job.
-     */
     public function handle()
+    {
+        $parentUserIds = is_array($this->parentUserId) ? $this->parentUserId : [$this->parentUserId];
+
+        $notificationSendData['player_ids'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
+        $notificationSendData['notification_url'] = "";
+        $notificationSendData['notification_title'] = $this->title;
+        $notificationSendData['notification_description'] = $this->title;
+        $notificationSendData['notification_time'] = now(); // Laravel helper for the current timestamp
+        $notificationSendData['notification_image'] = $this->childUser->profile_pic ?? asset('public/assets/img/logo.png');
+
+        ApplicationNotificationModel::sendOneSignalNotificationSchedule($notificationSendData);
+        $sender_user_id = $this->childUser->id;
+        $noti_type = $this->noti_data['noti_type'];
+        $msg = $this->noti_data['msg'];
+        $noti_date = $this->noti_data['noti_date'];
+
+        $notificationData = [];
+        foreach ($parentUserIds as $receiver_user_id) {
+            $notificationData[] = [
+                'sender_user_id' => $sender_user_id,
+                'receiver_user_id' => $receiver_user_id,
+                'title' => $msg,
+                'noti_type' => $noti_type,
+                'noti_date' => $noti_date,
+            ];
+        }
+        DB::table('user_notifications')->insert($notificationData);
+    }
+
+    public function handle_single()
     {
         // \Log::info("SendNotificationJob is now running for parentUserId");
         // \Log::info("hello..."); 
-        $notificationSendData['player_ids'] = User::where('id', $this->parentUserId)->pluck('player_id')->toArray();
+        $notificationSendData['player_ids'] = User::whereIn('id', $this->parentUserId)->pluck('player_id')->toArray();
         $notificationSendData['notification_url'] = "";
         // $notificationSendData['notification_title'] = $this->childUser->name . " accepted your invitation";
         // $notificationSendData['notification_description'] = $this->childUser->name . " accepted your invitation";
@@ -59,5 +86,7 @@ class SendNotificationJob implements ShouldQueue
         $input = ['sender_user_id'=>$sender_user_id, 'receiver_user_id'=>$receiver_user_ids,'title'=>$msg,'noti_type'=>$noti_type,'noti_date'=>$noti_date];
         DB::table('user_notifications')->insert($input);
     }
+
+
 }
 
