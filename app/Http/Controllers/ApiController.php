@@ -37,8 +37,9 @@ class ApiController extends BaseController
             if (!$user) {
                 return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
-            $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted' => 0])->pluck('history_remove_date')->first();
-          
+            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+                            ->select('history_remove_start_date','history_remove_date')->first();
+                            
             // $query = DB::table('location_history as lh')
             //     ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
             //     ->where('lh.user_id', $request->user_id)                // Filter by child user id
@@ -61,7 +62,7 @@ class ApiController extends BaseController
             }
             $query->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
             if($history_date){
-                $query->where('lh.datetime','>=', $history_date);         // Filter by remove history date
+                $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
             }
             $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
            
@@ -635,7 +636,6 @@ class ApiController extends BaseController
             }else{
                 $geoJsonRecord  = SafeZoneModel::create($data);
             }
-
             $encryptedResponse = $this->encryptData($geoJsonRecord);
             return $this->sendResponse($encryptedResponse, 'User zone added successfully');
         } catch (ValidationException $e) {
@@ -682,7 +682,9 @@ class ApiController extends BaseController
         try {
             $request->validate([
                 'child_user_id' => 'required',
-                'today_date' => 'required'
+                // 'today_date' => 'required'
+                'start_date' => 'required',
+                'end_date' => 'required'
             ]);
             $user = Auth::user();
             if (!$user) {
@@ -692,15 +694,15 @@ class ApiController extends BaseController
                 return $this->sendError('The user is unable to delete their data.', 400);
             }
             # manage location history in join table
-            $data = JoinUserModel::where(['parent_user_id'=>$user->id, 'child_user_id'=>$request->child_user_id,'is_deleted'=>0])->first();
+            $data = JoinUserModel::where(['parent_user_id'=>$user->id, 'child_user_id'=>$request->child_user_id,'is_deleted'=> 0])->first();
             if ($data) {
-                $data->update(['location_history_status'=>'is_removed','history_remove_date'=>$request->today_date]);
+                # START DATE TO END DATE DATA REMOVE ONLY
+                $data->update(['location_history_status'=>'is_removed','history_remove_start_date'=>$request->start_date,'history_remove_date'=>$request->end_date]);
                 return $this->sendResponse([], 'User location history remove successfully');
             } else {
                 return $this->sendError('User is currently not connected', 400);
             }
         } catch (ValidationException $e) {
-
            return $this->sendError($e->validator->errors()->first(), 422);
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
@@ -832,7 +834,7 @@ class ApiController extends BaseController
     }
     
     # USER LOCATION HISTORY DATE WISE WITH JOIN DATA
-    public function user_location_details(Request $request)  # with hold status and geo-json data
+    public function user_location_details(Request $request)  # with hold status and zone data
     {
         try {
             $request->validate([
@@ -845,18 +847,21 @@ class ApiController extends BaseController
             if (!$user) {
                 return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
-            $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=>0])->pluck('history_remove_date')->first();
-          
-            // Retrieve user's location history
+            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+                            ->select('history_remove_start_date','history_remove_date')->first();
+            
+            # Retrieve user's location history
+            # Retrieve user's location history
             $query = DB::table('location_history as lh')
-                ->join('users as u', 'lh.user_id', '=', 'u.id')          // Join the users table
-                ->where('lh.user_id', $request->user_id);                // Filter by child user id
-
-                if($request->date){
-                    $query->whereDate('lh.datetime', $request->date);              // Filter by date only
-                }
+                ->join('users as u', 'lh.user_id', '=', 'u.id')         
+                ->where('lh.user_id', $request->user_id);                
+                
                 if($request->start_date && $request->end_time){
-                    $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); // Filter by datetime range
+                    $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); 
+                }
+                $query->where('u.location_status', 'on');    
+                if($history_date){
+                     $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
                 }
 
                 # YYYY-DD-MM HH:MM:SS formate
@@ -865,27 +870,20 @@ class ApiController extends BaseController
                 //     $date = Carbon::parse($request->date)->format('Y-m-d');
                 //     $query->whereDate('lh.datetime', $date);
                 // }
-                
                 // if ($request->start_date && $request->end_time) {
                 //     // Convert ISO 8601 datetime to MySQL Y-m-d H:i:s format
                 //     $startDate = Carbon::parse($request->start_date)->format('Y-m-d H:i:s');
                 //     $endDate = Carbon::parse($request->end_time)->format('Y-m-d H:i:s');
-                
                 //     $query->whereBetween('lh.datetime', [$startDate, $endDate]);
                 // }
-                $query->where('u.location_status', 'on');                     // Ensure user has location_status 'on'
-                if($history_date){
-                    $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
-                }
-            $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    // Select necessary fields from both tables
-            // if ($latestHistory->isEmpty()) {
-            //     return $this->sendError('No data found for this user and date.', 404);
-            // }
-            
+                // if($history_date){
+                //     $query->where('lh.datetime','>=', $history_date);       // Filter by remove history date
+                // }
+            // dd($latestHistory);
+
+            $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    
             if ($latestHistory->isEmpty()) {
-                // Parse the date and set it to UTC
                 $date = Carbon::parse($request->start_date)->setTimezone('UTC');
-                // Get today's and yesterday's date in UTC
                 $today = Carbon::today('UTC');
                 $yesterday = Carbon::yesterday('UTC');          
                 if ($date->isSameDay($today)) {
