@@ -851,7 +851,6 @@ class ApiController extends BaseController
                             ->select('history_remove_start_date','history_remove_date')->first();
             
             # Retrieve user's location history
-            # Retrieve user's location history
             $query = DB::table('location_history as lh')
                 ->join('users as u', 'lh.user_id', '=', 'u.id')         
                 ->where('lh.user_id', $request->user_id);                
@@ -863,6 +862,7 @@ class ApiController extends BaseController
                 if($history_date){
                      $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
                 }
+                $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    
 
                 # YYYY-DD-MM HH:MM:SS formate
                 // if ($request->date) {
@@ -881,106 +881,111 @@ class ApiController extends BaseController
                 // }
             // dd($latestHistory);
 
-            $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    
-            if ($latestHistory->isEmpty()) {
-                $date = Carbon::parse($request->start_date)->setTimezone('UTC');
-                $today = Carbon::today('UTC');
-                $yesterday = Carbon::yesterday('UTC');          
-                if ($date->isSameDay($today)) {
-                    $day = "Today";
-                } elseif ($date->isSameDay($yesterday)) {
-                    $day = "Yesterday";
-                } else {
-                    $day = $date->format('l'); // Returns weekday name (e.g., Monday, Tuesday)
-                }
-                $message = "Unfortunately, there is no data available for this user on " . $day;
-                return $this->sendError($message, 404);
-            }            
+            // if ($latestHistory->isEmpty()) {
+            //     $date = Carbon::parse($request->start_date)->setTimezone('UTC');
+            //     $today = Carbon::today('UTC');
+            //     $yesterday = Carbon::yesterday('UTC');          
+            //     if ($date->isSameDay($today)) {
+            //         $day = "Today";
+            //     } elseif ($date->isSameDay($yesterday)) {
+            //         $day = "Yesterday";
+            //     } else {
+            //         $day = $date->format('l'); // Returns weekday name (e.g., Monday, Tuesday)
+            //     }
+            //     $message = "Unfortunately, there is no data available for this user on " . $day;
+            //     return $this->sendError($message, 404);
+            // }            
+
             # Initialize variables to track total distance and total time
             $totalDistance = 0;
             $startTime = null;
             $endTime = null;
+            $total_time = "0 hour 0 minute";
+            $result = [];
 
             # Map through the location data
-            $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
+            if($latestHistory->isNotEmpty()){
+             
+                $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
 
-                static $holdStartTime = null; # Track when the hold starts
-                static $isHolding = false;   # Track if the user is holding
-                static $currentLocation = null; # Track the current hold location
+                    static $holdStartTime = null; # Track when the hold starts
+                    static $isHolding = false;   # Track if the user is holding
+                    static $currentLocation = null; # Track the current hold location
 
-                if ($index == 0) {
-                    # Set the start time
-                    $startTime = new DateTime($item->datetime);
-                }
-                if ($index == $latestHistory->count() - 1) {
-                    # Set the end time
-                    $endTime = new DateTime($item->datetime);
-                }
+                    if ($index == 0) {
+                        # Set the start time
+                        $startTime = new DateTime($item->datetime);
+                    }
+                    if ($index == $latestHistory->count() - 1) {
+                        # Set the end time
+                        $endTime = new DateTime($item->datetime);
+                    }
 
-                # Calculate the distance between consecutive records using the Haversine formula
-                if ($index > 0) {
-                    $previousItem = $latestHistory[$index - 1];
-                    $distance = $this->haversineGreatCircleDistance(
-                        $previousItem->lattitude,
-                        $previousItem->longitude,
-                        $item->lattitude,
-                        $item->longitude
-                    );
-                    $totalDistance += $distance; # Accumulate total distance
+                    # Calculate the distance between consecutive records using the Haversine formula
+                    if ($index > 0) {
+                        $previousItem = $latestHistory[$index - 1];
+                        $distance = $this->haversineGreatCircleDistance(
+                            $previousItem->lattitude,
+                            $previousItem->longitude,
+                            $item->lattitude,
+                            $item->longitude
+                        );
+                        $totalDistance += $distance; # Accumulate total distance
 
-                    # Check if the user is holding
-                    if ($distance < 0.01) { # Threshold in KM (10 meters)
-                        if (!$isHolding) {
-                            $holdStartTime = new DateTime($previousItem->datetime);
-                            $isHolding = true;
-                        }
+                        # Check if the user is holding
+                        if ($distance < 0.01) { # Threshold in KM (10 meters)
+                            if (!$isHolding) {
+                                $holdStartTime = new DateTime($previousItem->datetime);
+                                $isHolding = true;
+                            }
 
-                        $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
-                        $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
+                            $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
+                            $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
 
-                        if ($holdMinutes >= 10) { # Threshold in minutes
-                            $item->hold_status = 'on';
+                            if ($holdMinutes >= 10) { # Threshold in minutes
+                                $item->hold_status = 'on';
+                            } else {
+                                $item->hold_status = 'off';
+                            }
                         } else {
+                            $isHolding = false;
                             $item->hold_status = 'off';
                         }
                     } else {
-                        $isHolding = false;
-                        $item->hold_status = 'off';
+                        $item->hold_status = 'off'; # Default for the first record
                     }
-                } else {
-                    $item->hold_status = 'off'; # Default for the first record
-                }
-                return [
-                    'user_id'      => $item->user_id,
-                    'phone_battery_status'  => $item->phone_battery_status,
-                    'user_name'    => $item->name,
-                    'profile_pic'  => $item->profile_pic,
-                    'lattitude'    => $item->lattitude,
-                    'longitude'    => $item->longitude,
-                    'address'      => $item->address,
-                    'user_speed'   => $item->user_speed,
-                    'phone_bettery'=> $item->phone_bettery,
-                    'datetime'     => $item->datetime,
-                    'hold_status'  => $item->hold_status, // Include hold status
-                    'course'       => $item->course,
-                    'accuracy'     => $item->accuracy,  
-                    'isMock'     =>  $item->isMock == 1 ? true : false,
-                ];
-            })->all();
+                    return [
+                        'user_id'      => $item->user_id,
+                        'phone_battery_status'  => $item->phone_battery_status,
+                        'user_name'    => $item->name,
+                        'profile_pic'  => $item->profile_pic,
+                        'lattitude'    => $item->lattitude,
+                        'longitude'    => $item->longitude,
+                        'address'      => $item->address,
+                        'user_speed'   => $item->user_speed,
+                        'phone_bettery'=> $item->phone_bettery,
+                        'datetime'     => $item->datetime,
+                        'hold_status'  => $item->hold_status, // Include hold status
+                        'course'       => $item->course,
+                        'accuracy'     => $item->accuracy,  
+                        'isMock'     =>  $item->isMock == 1 ? true : false,
+                    ];
+                })->all();
+                $timeSpent = $startTime->diff($endTime);  // Calculate total time spent
+                $total_time = $timeSpent->format('%h hours %i minutes');
+            }
 
             // $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
             $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_meter','zone_lattitude','zone_longitude','zone_type')->first();
-
-            $timeSpent = $startTime->diff($endTime);  // Calculate total time spent
             $response = [
                 'total_distance'=> round($totalDistance, 2) . ' KM',            // Total distance traveled in KM
-                'total_time'    => $timeSpent->format('%h hours %i minutes'),   // Total time spent in hours and minutes
+                'total_time'    => $total_time,                                 // Total time spent in hours and minutes
                 'zone_data'     => $zone,
                 'user_data'     => $result
             ];
             // Encrypt and send the response
             $encryptedResponse = $this->encryptData($response);
-            return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
+            return $this->sendResponse($response, 'User data retrieved successfully');
         } catch (ValidationException $e) {
            return $this->sendError($e->validator->errors()->first(), 422);
         } catch (\Exception $e) {
