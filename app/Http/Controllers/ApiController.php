@@ -24,7 +24,134 @@ define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
 {
-    public function user_hold_location_details(Request $request)  
+    public function user_hold_location_details(Request $request)  # with hold status and unique location
+    {
+        try {
+            $request->validate([
+                'user_id' => 'required', // child user id
+                // 'date' => 'required',    // date old remove after live- filter data
+                // 'start_date' => 'required',  // date - filter data
+                // 'end_date' => 'required',    // date - filter data
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
+            }
+            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+                            ->select('history_remove_start_date','history_remove_date')->first();
+           
+            $query = DB::table('location_history as lh')->join('users as u', 'lh.user_id', '=', 'u.id')->where('lh.user_id', $request->user_id);                
+            if($request->date){ 
+                $query->whereDate('lh.datetime', $request->date);        
+            }
+            if($request->start_date && $request->end_time){
+                $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); 
+            }
+            $query->where('u.location_status', 'on');                     
+            if($history_date){
+                $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
+            }
+            $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get(); 
+            
+            if ($latestHistory->isEmpty()) {
+                $date = Carbon::parse($request->date);
+                $today = Carbon::today();
+                $yesterday = Carbon::yesterday();
+
+                if ($date->equalTo($today)) {
+                    $day = "Today";
+                } elseif ($date->equalTo($yesterday)) {
+                    $day = "Yesterday";
+                } else {
+                    $day = $date->format('l');
+                }
+                $message = "Unfortunately, there is no data available for this user ".$day;
+                return $this->sendError($message, 404);
+            }
+
+            $previousLatitude = null;
+            $previousLongitude = null;
+
+            # Map through the location data
+            $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
+                static $holdStartTime = null;  // Track when the hold starts
+                static $isHolding = false;     // Track if the user is holding
+                static $holdMinutes = 0;       // Track the total hold minutes
+            
+            // For each record, compare with the previous one
+            if ($index > 0) {
+                $previousItem = $latestHistory[$index - 1];
+        
+                // Calculate the time difference between current and previous record (in seconds)
+                $timeDifference = strtotime($item->datetime) - strtotime($previousItem->datetime);
+        
+                // Check if the time difference is small enough to continue holding
+                if ($timeDifference <= 600) {  // 60 seconds (1 minute),600 second 10 min adjust as necessary
+                    if (!$isHolding) {
+                        // Start holding if not already holding
+                        $holdStartTime = new DateTime($previousItem->datetime);
+                        $isHolding = true;
+                        $item->hold_status = 'on';
+                    }else{
+                         $item->hold_status = 'off';
+                    }
+                } else {
+                    // If the time difference is too large, reset the hold
+                    $isHolding = false;
+                    $item->hold_status = 'off';
+                    $holdMinutes = 0; // Reset the hold minutes
+                }
+            } else {
+                // First record: no hold to track
+                $item->hold_status = 'off';
+                $holdMinutes = 0; // Reset hold minutes
+            }
+        
+            return [
+                // 'holdMinutes' => $holdMinutes,  // Return the correct hold minutes
+                'phone_battery_status' => $item->phone_battery_status,
+                'user_name' => $item->name,
+                'profile_pic' => $item->profile_pic,
+                'lattitude' => $item->lattitude,
+                'longitude' => $item->longitude,
+                'address' => $item->address,
+                'user_speed' => $item->user_speed,
+                'phone_bettery' => $item->phone_bettery,
+                'datetime' => $item->datetime,
+                'hold_status' => $item->hold_status,  // Include hold status
+                'course' => $item->course,
+                'accuracy' => $item->accuracy,
+                'isMock' => $item->isMock == 1 ? true : false,
+            ];
+            })->filter(function ($item) use (&$previousLatitude, &$previousLongitude) {
+                // Ignore if hold_status is not 'on'
+                if ($item['hold_status'] !== 'on') {
+                    return false;
+                }
+            
+                // Ignore if latitude and longitude are the same as the previous entry
+                if ($item['lattitude'] == $previousLatitude && $item['longitude'] == $previousLongitude) {
+                    return false;
+                }
+            
+                // Update previous latitude and longitude
+                $previousLatitude = $item['lattitude'];
+                $previousLongitude = $item['longitude'];
+            
+                return true;
+            })->values()->all();
+
+            $encryptedResponse = $this->encryptData($result);
+            return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
+        } catch (ValidationException $e) {
+
+           return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
+    } 
+
+    public function user_hold_location_details_same_location(Request $request)  
     {
         try {
             $request->validate([
@@ -465,6 +592,12 @@ class ApiController extends BaseController
 
             $locations = $request->input('locations');
             foreach ($locations as $location) {
+
+                $check = DB::table('location_history')->where('lattitude',$location['lattitude'])->where('longitude',$location['longitude'])->where('user_id',$user->id)->where('datetime',$location['today_date'])->exists();
+                if($check){
+                    Log::info('same locations ', ['location' => $location]);
+                    continue;
+                }
 
                 $maxValue = 9999999999.9999999;  
                 $minValue = -9999999999.9999999; 

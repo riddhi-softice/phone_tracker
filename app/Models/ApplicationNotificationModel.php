@@ -14,9 +14,10 @@ class ApplicationNotificationModel extends Model
         
         //  \Log::info("SendNotificationJob is now running for ,,,,");
          
-        # old web
         $appId = "0c341937-b7e1-44ac-88c0-c5adc1040882";
-        $apiKey = "ZjZhOTBkYzMtZTllYy00ZTlmLWJjYTEtYjVlZjZmMTgzZWU5";
+        $apiKey = "os_v2_app_bq2bsn5x4fckzcgayww4cbaiqitjur2rxwnuaculjbc4xg33l53gt4v2pjwugwnbmokayu6lmj2zi54r47gcimqlgsocsqhquuky5ca";
+       // $appId = "0c341937-b7e1-44ac-88c0-c5adc1040882";
+       //      $apiKey = "ZjZhOTBkYzMtZTllYy00ZTlmLWJjYTEtYjVlZjZmMTgzZWU5";
 
         $notification_title = $notificationData['notification_title'];
         $notification_message = $notificationData['notification_description'];
