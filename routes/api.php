@@ -61,3 +61,6 @@ Route::group(['middleware' => ['throttle:60,1'], 'as' => 'api.'], function () {
     });
 
 });
+
+Route::post('firebase_noti_single',[NotificationController::class, 'firebase_noti_single']);   
+Route::post('firebase_noti',[NotificationController::class, 'firebase_noti']);   

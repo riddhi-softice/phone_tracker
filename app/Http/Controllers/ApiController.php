@@ -24,7 +24,149 @@ define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
 {
+    function haversineDistance($lat1, $lon1, $lat2, $lon2) {
+        $earthRadius = 6371000; // Earth's radius in meters
+    
+        $lat1 = deg2rad($lat1);
+        $lon1 = deg2rad($lon1);
+        $lat2 = deg2rad($lat2);
+        $lon2 = deg2rad($lon2);
+    
+        $latDiff = $lat2 - $lat1;
+        $lonDiff = $lon2 - $lon1;
+    
+        $a = sin($latDiff / 2) * sin($latDiff / 2) +
+             cos($lat1) * cos($lat2) * sin($lonDiff / 2) * sin($lonDiff / 2);
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+    
+        return $earthRadius * $c; // Distance in meters
+    }
+
     public function user_hold_location_details(Request $request)  # with hold status and unique location
+    {
+        try {
+            $request->validate([
+                'user_id' => 'required', // child user id
+                // 'date' => 'required',    // date old remove after live- filter data
+                // 'start_date' => 'required',  // date - filter data
+                // 'end_date' => 'required',    // date - filter data
+            ]);
+            $user = Auth::user(); 
+            if (!$user) {
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
+            }
+            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+                            ->select('history_remove_start_date','history_remove_date')->first();
+           
+            $query = DB::table('location_history as lh')->join('users as u', 'lh.user_id', '=', 'u.id')->where('lh.user_id', $request->user_id);                
+            if($request->date){ 
+                $query->whereDate('lh.datetime', $request->date);        
+            }
+            if($request->start_date && $request->end_time){
+                $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); 
+            }
+            $query->where('u.location_status', 'on');                     
+            if($history_date){
+                $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
+            }
+            $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get(); 
+            
+            if ($latestHistory->isEmpty()) {
+                $date = Carbon::parse($request->date);
+                $today = Carbon::today();
+                $yesterday = Carbon::yesterday();
+
+                if ($date->equalTo($today)) {
+                    $day = "Today";
+                } elseif ($date->equalTo($yesterday)) {
+                    $day = "Yesterday";
+                } else {
+                    $day = $date->format('l');
+                }
+                $message = "Unfortunately, there is no data available for this user ".$day;
+                return $this->sendError($message, 404);
+            }
+
+            $previousLatitude = null;
+            $previousLongitude = null;
+            $previousHoldTime = null;
+
+            # Map through the location data
+            // $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
+            $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory, &$previousLatitude, &$previousLongitude) {
+
+                static $holdStartTime = null; # Track when the hold starts
+                static $isHolding = false;   # Track if the user is holding
+                static $currentLocation = null; # Track the current hold location
+
+                    // For each record, compare with the previous one
+                    if ($index > 0) {
+                        $previousItem = $latestHistory[$index - 1];
+                
+                        // Calculate the time difference between current and previous record (in seconds)
+                        $timeDifference = strtotime($item->datetime) - strtotime($previousItem->datetime);
+                
+                        // Calculate the distance between the two coordinates
+                        $distance = $this->haversineDistance($previousItem->lattitude, $previousItem->longitude, $item->lattitude, $item->longitude);
+                
+                        // Skip if the distance < 50 meters and time difference < 5 minutes
+                        if ($distance < 50 && $timeDifference < 300) {
+                            return null;  // Skip this entry as it's nearly the same location and within a short time
+                        }
+                
+                        // Hold is ON if distance >= 50m and time >= 5 min
+                        if ($distance >= 50 && $timeDifference >= 300) {
+                            $item->hold_status = 'on';
+                        } else {
+                            $isHolding = false;
+                            $item->hold_status = 'off';
+                            $holdMinutes = 0;  // Reset the hold minutes
+                        }
+                
+                    } else {
+                        // First record: no hold to track
+                        $item->hold_status = 'off';
+                        $holdMinutes = 0;
+                    }
+                
+                    // Update previous location for comparison
+                    $previousLatitude = $item->lattitude;
+                    $previousLongitude = $item->longitude;
+                
+                    // return $item;
+                return [
+                    'user_id'         => $item->user_id,
+                    'phone_battery_status' => $item->phone_battery_status,
+                    'user_name'       => $item->name,
+                    'profile_pic'     => $item->profile_pic,
+                    'lattitude'       => $item->lattitude,
+                    'longitude'       => $item->longitude,
+                    'address'         => $item->address,
+                    'user_speed'      => $item->user_speed,
+                    'phone_bettery'   => $item->phone_bettery,
+                    'datetime'        => $item->datetime,
+                    'hold_status'     => $item->hold_status,  // Include hold status
+                    'course'          => $item->course,
+                    'accuracy'        => $item->accuracy,
+                    'isMock'          => $item->isMock == 1 ? true : false,
+                ];
+            
+            })->filter(function ($item) {
+                return $item !== null && $item['hold_status'] === 'on';  // Now access hold_status as an array key
+            })->values()->all();
+            
+
+            $encryptedResponse = $this->encryptData($result);
+            return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
+        } catch (ValidationException $e) {
+
+           return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
+    } 
+
+    public function user_hold_location_details_not(Request $request)  # with hold status and unique location
     {
         try {
             $request->validate([
@@ -390,6 +532,7 @@ class ApiController extends BaseController
                 'msg' => "Accepted your invitation",
                 'noti_type' => "join_user",
             ];
+            // SendNotificationJob::dispatch($childUser, $parentUserId,$title,$noti_data);
             SendNotificationJob::dispatch($childUser, $parentUserId,$title,$noti_data);
 
             /*  #  SEND PUSH NOTIFICATION TO PARENT USER

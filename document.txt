@@ -12,3 +12,7 @@ composer require endroid/qr-code --ignore-platform-reqs
 3. yajra datatables
 composer require yajra/laravel-datatables-oracle:"^10.0"
 composer require yajra/laravel-datatables-oracle --ignore-platform-reqs
+
+
+4 .firebase for notification
+composer require kreait/firebase-php
