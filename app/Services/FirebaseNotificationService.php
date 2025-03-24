@@ -5,19 +5,11 @@ namespace App\Services;
 use Kreait\Firebase\Factory;
 use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification;
+use Illuminate\Support\Facades\Log;
+
 
 class FirebaseNotificationService
 {
-    // protected $firebase;
-    // protected $messaging;
-
-    // public function __construct()
-    // {
-    //     // dd(storage_path('app/firebase/credentials.json'));
-    //     $this->firebase = (new Factory)->withServiceAccount(storage_path('app/firebase/credentials.json'));
-    //     $this->messaging = $this->firebase->createMessaging();
-    // }
-
     public function sendDataMessage($notificationSendData)
     {
         $factory = (new Factory)->withServiceAccount(storage_path('app/firebase/credentials.json'));
@@ -27,12 +19,13 @@ class FirebaseNotificationService
         $description = $notificationSendData['notification_description'];
         $tokens = $notificationSendData['device_tokens'];
         $notification_image = $notificationSendData['notification_image'];
+        $noti_type = $notificationSendData['noti_type'];
 
         $data_payload = [
-            // 'notification_type' => 'post_type',
-            'redirect_to' => 'REDIRECT',
-            'title' => $title,
-            'body' => $description,
+            'noti_type' => $noti_type,
+            // 'redirect_to' => 'REDIRECT',
+            // 'title' => $title,
+            // 'body' => $description,
             // 'image' => $notification_image
         ];
 
@@ -57,15 +50,73 @@ class FirebaseNotificationService
         if ($failureCount > 0) {
             Log::error('FCM Notification Error:', [
                 'title' => $title,
-                'failure_count' => $failureCount,
-                'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
+                'failure_count' => $failureCount
+                // 'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
             ]);
         }
 
         return [
             'success_count' => $report->successes()->count(),
             'failure_count' => $report->failures()->count(),
-            'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
+            // 'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
+        ];
+    }
+    
+    public function sendDataMessageJob($notificationSendData)
+    {
+        // dd($notificationSendData['other_data']);
+        //  Log::info('service : ', ['data' => $notificationSendData]);
+        
+        $factory = (new Factory)->withServiceAccount(storage_path('app/firebase/credentials.json'));
+        $messaging = $factory->createMessaging();
+
+        $title = $notificationSendData['other_data']['noti_title'];
+        $description = $notificationSendData['other_data']['noti_desc'];
+        $tokens = $notificationSendData['device_tokens'];
+        // $notification_image = $notificationSendData['other_data']['notification_image'];
+        $noti_type = $notificationSendData['other_data']['noti_type'];
+
+        $data_payload = [
+            'noti_type' => $noti_type,
+            // 'redirect_to' => 'REDIRECT',
+            // 'title' => $title,
+            // 'body' => $description,
+            // 'image' => $notification_image
+        ];
+        
+         Log::info('data_payload : ', ['data_payload' => $data_payload]);
+        // dd($data_payload);
+
+        // Create the message template
+        $message = CloudMessage::new()
+            ->withNotification(['title' => $title, 'body' => $description])
+            ->withAndroidConfig([
+                'priority' => 'high',
+            ])
+            ->withApnsConfig([
+                'payload' => [
+                    'aps' => [
+                        'contentAvailable' => true,
+                        'sound' => 'default',
+                    ],
+                ],
+            ])
+            ->withData($data_payload);
+        $report = $messaging->sendMulticast($message, $tokens);
+
+        $failureCount = $report->failures()->count();
+        if ($failureCount > 0) {
+            Log::error('FCM Notification Error:', [
+                'title' => $title,
+                'failure_count' => $failureCount
+                // 'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
+            ]);
+        }
+
+        return [
+            'success_count' => $report->successes()->count(),
+            'failure_count' => $report->failures()->count(),
+            // 'failures' => $report->failures()->map(fn ($failure) => $failure->error()->getMessage()),
         ];
     }
 

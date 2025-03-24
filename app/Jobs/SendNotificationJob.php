@@ -17,14 +17,14 @@ class SendNotificationJob implements ShouldQueue
 
     protected $childUser;
     protected $parentUserId;
-    protected $title;
+    // protected $title;
     protected $noti_data;
 
-    public function __construct($childUser, $parentUserId,$title,$noti_data)
+    public function __construct($childUser, $parentUserId,$noti_data)
     {
         $this->childUser = $childUser;
         $this->parentUserId = $parentUserId;
-        $this->title = $title;
+        // $this->title = $title;
         $this->noti_data = $noti_data;
     }
     
@@ -35,12 +35,10 @@ class SendNotificationJob implements ShouldQueue
         $parentUserIds = is_array($this->parentUserId) ? $this->parentUserId : [$this->parentUserId];
 
         $notificationSendData['device_tokens'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
-        $notificationSendData['notification_title'] = $this->title;
-        $notificationSendData['notification_description'] = $this->title;
         // $notificationSendData['notification_title'] = $this->noti_data['noti_title'];
         // $notificationSendData['notification_description'] = $this->noti_data['noti_desc'];
-        // $notificationSendData['other_data'] = $this->noti_data;
-        $notificationSendData['notification_image'] = $this->childUser->profile_pic ?? asset('public/assets/img/logo.png');
+        // $notificationSendData['notification_image'] = $this->childUser->profile_pic ?? asset('public/assets/img/logo.png');
+        $notificationSendData['other_data'] = $this->noti_data;
 
         // ApplicationNotificationModel::sendOneSignalNotificationSchedule($notificationSendData);
 
@@ -63,7 +61,6 @@ class SendNotificationJob implements ShouldQueue
         }
         DB::table('user_notifications')->insert($notificationData);
     }
-
 
     public function handle_single()
     {

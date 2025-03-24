@@ -81,11 +81,12 @@ class NotificationController extends BaseController
             if ($user) {
 
                 # SEND PUSH NOTIFICATION TO PARENT USER
-                // $notificationSendData['device_tokens'] = User::where('id',$request->receiver_user_id)->pluck('player_id')->toArray();
-                $notificationSendData['device_tokens'] = User::whereIn('id',[22,23])->pluck('player_id')->toArray();
+                $notificationSendData['device_tokens'] = User::where('id',$request->receiver_user_id)->pluck('player_id')->toArray();
+                // $notificationSendData['device_tokens'] = User::whereIn('id',[22,23])->pluck('player_id')->toArray();
                 $notificationSendData['notification_title'] = "Incoming Call from " . $user->name;
                 $notificationSendData['notification_description'] = $user->name . " is calling you. Tap to answer.";
                 $notificationSendData['notification_image'] = ($user->profile_pic == null) ? asset('public/assets/img/logo.png') : $user->profile_pic;
+                $notificationSendData['noti_type'] = "sos_call";
                 // dd($notificationSendData);
                 $result = $this->firebaseService->sendDataMessage($notificationSendData);
 

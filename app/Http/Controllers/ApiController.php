@@ -526,14 +526,14 @@ class ApiController extends BaseController
             LocationHistoryModel::create($location);
 
             // Step 6: Dispatch notification job
-            $title = $childUser->name . " accepted your invitation";
             $noti_data = [
                 'noti_date' => $request->today_date,
-                'msg' => "Accepted your invitation",
+                'msg' => "Invitation Accepted!",
                 'noti_type' => "join_user",
+                'noti_title' => "Invitation Accepted!",
+                'noti_desc' => "Your invitation was accepted. Start connecting now!."
             ];
-            // SendNotificationJob::dispatch($childUser, $parentUserId,$title,$noti_data);
-            SendNotificationJob::dispatch($childUser, $parentUserId,$title,$noti_data);
+            SendNotificationJob::dispatch($childUser, $parentUserId,$noti_data);
 
             /*  #  SEND PUSH NOTIFICATION TO PARENT USER
             $notificationSendData['player_ids'] = User::where('id',$parentUserId)->pluck('player_id')->toArray();
@@ -790,14 +790,17 @@ class ApiController extends BaseController
                             $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
                         // }
                     }
-                    $title = $user->name . " is going outside the restricted area";
-                    $noti_data = [
-                        'noti_date' => $location['today_date'],
-                        'msg' => "Going outside the restricted area",
-                        'noti_type' => "outside_zone",
-                    ];
-                    // $this->zone_noti($user, $parentUserId, $title, $noti_data);
-                    SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
+                    if (!empty($parentUserId)) {
+                        $noti_data = [
+                            'noti_date' => $location['today_date'],
+                            'msg' => "Alert: Restricted Area Breach!",
+                            'noti_type' => "outside_zone",
+                            'noti_title' => "Alert: Restricted Area Breach!",
+                            'noti_desc' =>  $user->name ."has moved outside the restricted area."
+                        ];
+                        // $this->zone_noti($user, $parentUserId, $title, $noti_data);  // testing purpose
+                        SendNotificationJob::dispatch($user, $parentUserId,$noti_data);
+                    }
                 }
             }
 

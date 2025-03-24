@@ -49,15 +49,13 @@ class ApplicationNotificationModel extends Model
             ]);
         // }
     }
-    
-    
+        
     public static function sendFirebaseNotification($notificationData)
     {
-        // ✅ Resolve FirebaseNotificationService
+        // Log::info('model : ', ['data' => $notificationData]);
         $firebaseService = app(FirebaseNotificationService::class);
 
-        // ✅ Send the notification using Firebase
-        return $firebaseService->sendDataMessage($notificationData);
+        return $firebaseService->sendDataMessageJob($notificationData);
     }
 
 }
