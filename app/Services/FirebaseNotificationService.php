@@ -7,9 +7,9 @@ use Kreait\Firebase\Messaging\CloudMessage;
 use Kreait\Firebase\Messaging\Notification;
 use Illuminate\Support\Facades\Log;
 
-
 class FirebaseNotificationService
 {
+    # SEND CALL NOTIFICATION
     public function sendDataMessage($notificationSendData)
     {
         $factory = (new Factory)->withServiceAccount(storage_path('app/firebase/credentials.json'));
@@ -23,9 +23,9 @@ class FirebaseNotificationService
 
         $data_payload = [
             'noti_type' => $noti_type,
+            'title' => $title,
+            'description' => $description,
             // 'redirect_to' => 'REDIRECT',
-            // 'title' => $title,
-            // 'body' => $description,
             // 'image' => $notification_image
         ];
 
@@ -62,6 +62,7 @@ class FirebaseNotificationService
         ];
     }
     
+    # JOIN USER AND ZONE NOTIFICATION
     public function sendDataMessageJob($notificationSendData)
     {
         // dd($notificationSendData['other_data']);
@@ -73,15 +74,19 @@ class FirebaseNotificationService
         $title = $notificationSendData['other_data']['noti_title'];
         $description = $notificationSendData['other_data']['noti_desc'];
         $tokens = $notificationSendData['device_tokens'];
-        // $notification_image = $notificationSendData['other_data']['notification_image'];
         $noti_type = $notificationSendData['other_data']['noti_type'];
+        $user_id = $notificationSendData['other_data']['sender_user_id'];
+        $user_name = $notificationSendData['other_data']['sender_name'];
+        $profile_pic = $notificationSendData['other_data']['sender_profile'];
 
         $data_payload = [
             'noti_type' => $noti_type,
             // 'redirect_to' => 'REDIRECT',
-            // 'title' => $title,
-            // 'body' => $description,
-            // 'image' => $notification_image
+            'title' => $title,
+            'description' => $description,
+            'sender_user_id' => $user_id,
+            'sender_name' => $user_name,
+            'sender_profile' => $profile_pic
         ];
         
          Log::info('data_payload : ', ['data_payload' => $data_payload]);

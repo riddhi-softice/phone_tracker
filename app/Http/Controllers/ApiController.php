@@ -527,6 +527,9 @@ class ApiController extends BaseController
 
             // Step 6: Dispatch notification job
             $noti_data = [
+                'sender_user_id' => $childUser->id,
+                'sender_name' => $childUser->name,
+                'sender_profile' => $childUser->profile_pic,
                 'noti_date' => $request->today_date,
                 'msg' => "Invitation Accepted!",
                 'noti_type' => "join_user",
@@ -774,24 +777,59 @@ class ApiController extends BaseController
                     $value1->update(['phone_battery_status' => $location['phone_battery_status']]);
                 }               
                 
-                # OUTSIDE ZONE NOTIFICATION
+                # ZONE NOTIFICATION
                 $safeZones = SafeZoneModel::where(['child_user_id' => $user->id,'noti_status' => 'on'])->get();
                 if ($safeZones->isNotEmpty()) {
-                    $parentUserId = []; 
-
+                    
+                    $parentUserId = [];
+                    $safeParentUserId = [];
                     foreach ($safeZones as $safeZone) {
+
                         $distance = $this->haversineGreatCircleDistanceZone(
                             $safeZone->zone_lattitude,  
                             $safeZone->zone_longitude,  
                             $location['lattitude'],
                             $location['longitude']
                         );
-                        // if ($distance > ($safeZone->zone_meter)) {
-                            $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
-                        // }
+
+                        # OUTSIDE ZONE USERS 
+                        if ($distance > ($safeZone->zone_meter)) {
+                            // $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
+                            $parentUserId[] = $safeZone->parent_user_id; 
+                            SafeZoneModel::where(['parent_user_id'=> $safeZone->parent_user_id, 'child_user_id'=>$user->id])->update(['user_zone'=>'outside_zone']);
+                        }
+
+                        # INSIDE SAFE ZONE USERS
+                        $lastZoneStatus = SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->value('user_zone');
+                        if ($distance <= $safeZone->zone_meter) {
+
+                            // If user was previously outside, now update status to "safe_zone"
+                            if ($lastZoneStatus === 'outside_zone') {
+                                $safeParentUserId[] = $safeZone->parent_user_id;
+                                SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->update(['user_zone' => 'safe_zone']);
+                            }
+                        }
                     }
+
+                    if (!empty($safeParentUserId)) {
+                        $noti_data = [
+                            'sender_user_id' => $user->id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg' => "User is back in the safe zone",
+                            'noti_type' => "safe_zone",
+                            'noti_title' => "Safe Zone Entry",
+                            'noti_desc' =>  $user->name . " has returned to the safe zone."
+                        ];
+                        SendNotificationJob::dispatch($user, $safeParentUserId, $noti_data);
+                    }
+
                     if (!empty($parentUserId)) {
                         $noti_data = [
+                            'sender_user_id' => $user->id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
                             'noti_date' => $location['today_date'],
                             'msg' => "Alert: Restricted Area Breach!",
                             'noti_type' => "outside_zone",
@@ -802,6 +840,7 @@ class ApiController extends BaseController
                         SendNotificationJob::dispatch($user, $parentUserId,$noti_data);
                     }
                 }
+              
             }
 
                 // $geojsonDataList = GeoJson::where('child_user_id', $user->id)->where('noti_status', 'on')->get();
