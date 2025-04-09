@@ -22,7 +22,7 @@ Route::group(['middleware' => ['throttle:60,1'], 'as' => 'api.'], function () {
             Route::post('get_privacy', 'get_privacy');    
         });
     });
-
+ 
     # GENERAL APIS
     Route::controller(ApiController::class)->group(function () {
         Route::post('check_version', 'check_version');
@@ -48,6 +48,8 @@ Route::group(['middleware' => ['throttle:60,1'], 'as' => 'api.'], function () {
             Route::post('remove_user_history','remove_user_history');
 
             Route::post('manage_user_geojson','manage_user_geojson');  
+            Route::post('delete_zone','delete_zone');  
+            Route::post('zone_list','zone_list');  
         });
     });
 

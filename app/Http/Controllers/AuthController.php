@@ -147,11 +147,18 @@ class AuthController extends BaseController
     public function refresh_token(Request $request)
     {
         try {          
-            $token = JWTAuth::getToken();
-            $user = User::where('remember_token',$token)->first();
+            $tokenString = $request->header('Authorization');
+            $old_token = str_replace('Bearer ', '', $tokenString);
+            
+            
+            // dd($token);
+            Log::info('refresh token before....', ['old_token'=>$old_token]);
+            
+            $user = User::where('remember_token',$old_token)->first();
             if (!$user) {
                 return $this->sendError('Invalid token,User not found.', 401);
             }
+            $token = JWTAuth::getToken();
             $newToken = JWTAuth::refresh($token);
 
             $updateData['remember_token'] = $newToken;
@@ -160,22 +167,42 @@ class AuthController extends BaseController
             // # Prepare response data for new user
             $response = $this->prepareUserResponse($user, $newToken);
             $encryptedResponse = $this->encryptData($response);
+            
+            // Log::info('refresh token after....', ['user_data' => $user,'token'=>$newToken,'old_token'=>$token]);
+             
             return $this->sendResponse($encryptedResponse, 'User token refresh successful.');
+            // } catch (\Exception $e) {
+            //     Log::error('Unhandled exception during token refresh', [
+            //         'message' => $e->getMessage(),
+            //         'trace' => $e->getTraceAsString(),
+            //     ]);
+            //     return response()->json([
+            //         'success' => false,
+            //         'message' => 'An unexpected error occurred.'
+            //     ], 500);
 
-        } catch (TokenExpiredException $e) {
+        } catch (\Exception $e) {
+            // } catch (TokenExpiredException $e) { // not working when expired and can no longer be refreshed
             $tokenString = $request->header('Authorization');
             $old_token = str_replace('Bearer ', '', $tokenString);
+            
+            Log::info('exipred token before....', ['old_token'=>$old_token]);
             $user = User::where('remember_token',$old_token)->first();
             if (!$user) {
-                return $this->sendError('Token expired,User not found.', 401);
+                return $this->sendError('Expired token,User not found.', 401);
             }
+
             $newToken = $this->generateJwtToken($user);
+
             $updateData['remember_token'] = $newToken;
             $user->update($updateData);
 
             // # Prepare response data for new user
             $response = $this->prepareUserResponse($user, $newToken);
             $encryptedResponse = $this->encryptData($response);
+            
+            // Log::info('exipred token refresh after.', ['refresh_token' => $user,'token'=>$newToken,'old_token'=>$old_token]);
+            
             return $this->sendResponse($encryptedResponse, 'User token refresh successful.');
             
         } catch (JWTException $e) {

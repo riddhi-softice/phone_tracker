@@ -24,23 +24,208 @@ define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
 {
-    function haversineDistance($lat1, $lon1, $lat2, $lon2) {
-        $earthRadius = 6371000; // Earth's radius in meters
-    
-        $lat1 = deg2rad($lat1);
-        $lon1 = deg2rad($lon1);
-        $lat2 = deg2rad($lat2);
-        $lon2 = deg2rad($lon2);
-    
-        $latDiff = $lat2 - $lat1;
-        $lonDiff = $lon2 - $lon1;
-    
-        $a = sin($latDiff / 2) * sin($latDiff / 2) +
-             cos($lat1) * cos($lat2) * sin($lonDiff / 2) * sin($lonDiff / 2);
-        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
-    
-        return $earthRadius * $c; // Distance in meters
+    public function delete_zone(Request $request)
+    {
+        try {
+            $request->validate([
+                'zone_id' => 'required',
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
+            }
+            $data = SafeZoneModel::where(['id'=>$request->zone_id])->first();
+            if($data){
+
+                $data->delete();
+                return $this->sendResponse([], 'The user zone has been removed successfully.');
+            } else {
+                return $this->sendError('Unable to find the specified user zone.', 400);
+            }
+        } catch (ValidationException $e) {
+           return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
     }
+
+    # PARENT USER VIEW THERE CHILD USER ZONES
+    public function zone_list(Request $request)
+    {
+        try {
+            $request->validate([
+                'child_user_id' => 'required', // child user id
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located',401);
+            }
+            // Fetch latest location data for the child user
+            $location = DB::table('location_history') ->where('user_id', $request->child_user_id)
+                    ->orderByDesc('id')->select('phone_bettery', 'user_speed')->first();
+    
+                $zones = DB::table('safe_zone as sz')
+                ->join('users as u', 'sz.child_user_id', '=', 'u.id')
+                ->where('sz.parent_user_id', $user->id)
+                ->select([
+                    'u.name as user_name',
+                    'u.profile_pic',
+                        'sz.id',
+                    'sz.zone_name',
+                    'sz.zone_type',
+                    'sz.zone_address',
+                ])->get();
+        
+            // Merge each zone with location info
+            $response = $zones->map(function ($zone) use ($location) {
+                return [
+                    'user_name'     => $zone->user_name,
+                    'profile_pic'   => $zone->profile_pic,
+                    'zone_id'     => $zone->id,
+                    'zone_name'     => $zone->zone_name,
+                    'zone_type'     => $zone->zone_type,
+                    'zone_address'  => $zone->zone_address,
+                    'phone_bettery' => $location->phone_bettery ?? null,
+                    'user_speed'    => $location->user_speed ?? null,
+                ];
+            });
+    
+            $encryptedResponse = $this->encryptData($response); 
+            return $this->sendResponse($response, 'Zone list retrieved successfully.');
+    
+        } catch (ValidationException $e) {
+            return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
+    }
+
+    public function user_location_details(Request $request)  # with hold status and latest zone data
+    {
+        try {
+            $request->validate([
+                'user_id' => 'required',     // child user id
+                'start_date' => 'required',  // date - filter data
+                'end_date' => 'required',    // date - filter data
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
+            }
+            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+                            ->select('history_remove_start_date','history_remove_date')->first();
+            
+            # Retrieve user's location history
+            $query = DB::table('location_history as lh')
+                ->join('users as u', 'lh.user_id', '=', 'u.id')         
+                ->where('lh.user_id', $request->user_id);                
+                
+                if($request->start_date && $request->end_time){
+                    $query->whereBetween('lh.datetime', [$request->start_date, $request->end_time]); 
+                }
+                $query->where('u.location_status', 'on');    
+                if($history_date){
+                     $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
+                }
+                $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    
+
+            # Initialize variables to track total distance and total time
+            $totalDistance = 0;
+            $startTime = null;
+            $endTime = null;
+            $total_time = "0 hour 0 minute";
+            $result = [];
+
+            # Map through the location data
+            if($latestHistory->isNotEmpty()){
+             
+                $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
+
+                    static $holdStartTime = null; # Track when the hold starts
+                    static $isHolding = false;   # Track if the user is holding
+                    static $currentLocation = null; # Track the current hold location
+
+                    if ($index == 0) {
+                        # Set the start time
+                        $startTime = new DateTime($item->datetime);
+                    }
+                    if ($index == $latestHistory->count() - 1) {
+                        # Set the end time
+                        $endTime = new DateTime($item->datetime);
+                    }
+
+                    # Calculate the distance between consecutive records using the Haversine formula
+                    if ($index > 0) {
+                        $previousItem = $latestHistory[$index - 1];
+                        $distance = $this->haversineGreatCircleDistance(
+                            $previousItem->lattitude,
+                            $previousItem->longitude,
+                            $item->lattitude,
+                            $item->longitude
+                        );
+                        $totalDistance += $distance; # Accumulate total distance
+
+                        # Check if the user is holding
+                        if ($distance < 0.01) { # Threshold in KM (10 meters)
+                            if (!$isHolding) {
+                                $holdStartTime = new DateTime($previousItem->datetime);
+                                $isHolding = true;
+                            }
+
+                            $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
+                            $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
+
+                            if ($holdMinutes >= 10) { # Threshold in minutes
+                                $item->hold_status = 'on';
+                            } else {
+                                $item->hold_status = 'off';
+                            }
+                        } else {
+                            $isHolding = false;
+                            $item->hold_status = 'off';
+                        }
+                    } else {
+                        $item->hold_status = 'off'; # Default for the first record
+                    }
+                    return [
+                        'user_id'      => $item->user_id,
+                        'phone_battery_status'  => $item->phone_battery_status,
+                        'user_name'    => $item->name,
+                        'profile_pic'  => $item->profile_pic,
+                        'lattitude'    => $item->lattitude,
+                        'longitude'    => $item->longitude,
+                        'address'      => $item->address,
+                        'user_speed'   => $item->user_speed,
+                        'phone_bettery'=> $item->phone_bettery,
+                        'datetime'     => $item->datetime,
+                        'hold_status'  => $item->hold_status, // Include hold status
+                        'course'       => $item->course,
+                        'accuracy'     => $item->accuracy,  
+                        'isMock'     =>  $item->isMock == 1 ? true : false,
+                    ];
+                })->all();
+                $timeSpent = $startTime->diff($endTime);  // Calculate total time spent
+                $total_time = $timeSpent->format('%h hours %i minutes');
+            }
+
+            // $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
+            $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
+            ->select('zone_meter','zone_lattitude','zone_longitude','zone_type')->orderBy('id','desc')->first();
+            $response = [
+                'total_distance'=> round($totalDistance, 2) . ' KM',            // Total distance traveled in KM
+                'total_time'    => $total_time,                                 // Total time spent in hours and minutes
+                'zone_data'     => $zone,
+                'user_data'     => $result
+            ];
+            // Encrypt and send the response
+            $encryptedResponse = $this->encryptData($response);
+            return $this->sendResponse($response, 'User data retrieved successfully');
+        } catch (ValidationException $e) {
+           return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+        }
+    } 
 
     public function user_hold_location_details(Request $request)  # with hold status and unique location
     {
@@ -639,83 +824,9 @@ class ApiController extends BaseController
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage(), 500);
         }
     }
-
-    # singal location data store
-    /* public function update_location(Request $request)  # queue notification (outside zone)
-    {
-        try {
-            $request->validate([
-                'lattitude' => 'required',
-                'longitude' => 'required',
-                'address' => 'required',
-                'phone_bettery' => 'required',
-                'user_speed' => 'required',
-                'phone_battery_status' => 'required',
-                'today_date' => 'required',
-                 'course' => 'required',
-                 'accuracy' => 'required',
-                 'isMock' => 'required',
-            ]);
-            $user = Auth::user();
-            if ($user) {              
-                # Prepare location data for insertion
-                $data = array_merge($request->all(), [
-                    'datetime' => $request->today_date,
-                    'user_id' => $user->id
-                ]);
-                unset($data['today_date']);
-                LocationHistoryModel::create($data);
-                
-                # USER STATUS UPDATE
-                $join_status = JoinUserModel::where(['child_user_id'=>$user->id,'is_deleted'=>0])->get();
-                foreach ($join_status as $key => $value1) {
-                    $value1->update(['phone_battery_status'=>$request->phone_battery_status]);
-                }
-                
-                # OUT SIDE ZONE NOTIFICATION
-                // Get all GeoJSON records for the child user with 'noti_status' as 'on'
-                $geojsonDataList = GeoJson::where('child_user_id', $user->id)->where('noti_status', 'on')->get();
-                if ($geojsonDataList->isNotEmpty()) {
-
-                    foreach ($geojsonDataList as $geojsonData) {
-                        $geojsonString = is_array($geojsonData->geojson) ? json_encode($geojsonData->geojson) : $geojsonData->geojson;
-
-                        $geometry = DB::selectOne("
-                            SELECT ST_Contains(
-                                ST_GeomFromGeoJSON(?),
-                                ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'))
-                            ) AS is_inside", [$geojsonString, $request->longitude, $request->latitude]);
-
-                        if (!$geometry->is_inside) {
-                            $parentUserId = $geojsonData->parent_user_id; // Get the parent user ID
-                            $title = $user->name . " is going outside the restricted area";
-                            $noti_data = [
-                                'noti_date' => $request->today_date,
-                                'msg' => "Going outside the restricted area",
-                                'noti_type' => "outside_zone",
-                            ];
-                            // Dispatch notification for each parent user
-                            SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
-                        }
-                    }
-                }
-
-                $parent_count = JoinUserModel::where(['child_user_id'=>$user->id,'is_deleted'=>0])->count();
-                $data['located_parent_user'] = $parent_count;
-
-                $encryptedResponse = $this->encryptData($data);
-                return $this->sendResponse($encryptedResponse, 'User location updated successfully');
-            }
-            return $this->sendError("user not found");
-        } catch (ValidationException $e) {
-           return $this->sendError($e->validator->errors()->first(), 422);
-        } catch (\Exception $e) {
-            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
-        }
-    } */
     
     # multiple location data store from array # Address not found
-    public function update_location(Request $request)  # Queue notification (outside zone)
+    public function update_location_single_zone(Request $request)  # Queue notification (outside zone) 
     {
         try {
             $request->validate([
@@ -933,10 +1044,11 @@ class ApiController extends BaseController
     {
         try {
             $request->validate([
+                'zone_name' => 'required',
                 'zone_meter' => 'required',
                 'noti_status' => 'required',
                 'child_user_id' => 'required',
-                'zone_type' => 'required',
+                'zone_type' =>   'required',
                 'zone_lattitude' => 'required',
                 'zone_longitude' => 'required',
             ]);
@@ -947,10 +1059,13 @@ class ApiController extends BaseController
             $data = $request->all();
             $data['parent_user_id'] = $user->id;
 
-            // Find existing record or create a new one
-            $geoJsonRecord  = SafeZoneModel::where(['parent_user_id'=>$user->id,'child_user_id'=> $request->child_user_id])->first();
-            if($geoJsonRecord){
-                $geoJsonRecord->update($data);
+            if($request->zone_id){
+                unset($data['zone_id']);
+                // Find existing record or create a new one
+                $geoJsonRecord  = SafeZoneModel::where(['id'=> $request->zone_id])->first();
+                if($geoJsonRecord){
+                    $geoJsonRecord->update($data);
+                }
             }else{
                 $geoJsonRecord  = SafeZoneModel::create($data);
             }
@@ -992,7 +1107,7 @@ class ApiController extends BaseController
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
-    }
+    }  
 
     # remove location history
     public function remove_user_history(Request $request)
@@ -1151,8 +1266,8 @@ class ApiController extends BaseController
         }
     }
     
-    # USER LOCATION HISTORY DATE WISE WITH JOIN DATA
-    public function user_location_details(Request $request)  # with hold status and zone data
+    # USER LOCATION HISTORY DATE WISE WITH JOIN DATA  # single zone
+    public function user_location_details_old(Request $request)  # with hold status and zone data
     {
         try {
             $request->validate([
@@ -1309,186 +1424,30 @@ class ApiController extends BaseController
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
-    }
-    
-    # ALL USER LIST # 11 limit
-    public function old_get_home_data_old(Request $request) # without parent remove history status
-    {
-        $user = Auth::user();
-        if (!$user) {
-            return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
-        }
-        try {
-            $join_user_ids = DB::table('join_user')->where('parent_user_id', $user->id)->pluck('child_user_id')->toArray();
-            if (!empty($join_user_ids)) {
-
-                $join_user_ids_str = implode(',', $join_user_ids); // Convert array to comma-separated string
-                $latestHistory = DB::table('location_history as lh')
-                    ->join(
-                        DB::raw('(SELECT user_id, MAX(id) as latest_id
-                                    FROM location_history
-                                    WHERE user_id IN ('.$join_user_ids_str.')
-                                    GROUP BY user_id) as latest'),
-                        'lh.id', '=', 'latest.latest_id'
-                    )                                                // users latest location data
-                    ->join('users as u', 'lh.user_id', '=', 'u.id')  // Join the users table
-                    ->whereIn('lh.user_id', $join_user_ids)          // Filter by parent_user_id
-                    ->where('u.location_status', 'on')               // Ensure user has location_status 'on'
-                    ->select('lh.*', 'u.name', 'u.profile_pic')      // Select necessary fields from both tables
-                    ->limit(11)                                      // Limit the results to 11
-                    ->get();
-            } else {
-                // Handle the case where there are no child_user_ids
-                $latestHistory = collect(); // Return an empty collection or handle it as needed
-            }
-
-            $result = $latestHistory->map(function ($item) {
-                return [
-                    'id'          => $item->id,
-                    'user_id'     => $item->user_id,
-                    'user_name'   => $item->name,
-                    'phone_battery_status' => $item->phone_battery_status,
-                    'profile_pic' => $item->profile_pic,
-                    'lattitude'   => $item->lattitude,
-                    'longitude'   => $item->longitude,
-                    'address'     => $item->address,
-                    'user_speed'  => $item->user_speed,
-                ];
-            })->all();
-
-            $encryptedResponse = $this->encryptData($result);
-            return $this->sendResponse($encryptedResponse, 'User data get successfully');
-        } catch (\Exception $e) {
-            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
-        }
-    }
-
-    /*# USER LOCATION HISTORY DATE WISE WITH JOIN DATA
-    public function user_location_details(Request $request)  # with hold status # without parent remove history status
-    {
-        try {
-            $request->validate([
-                'user_id' => 'required', // child user id
-                'date' => 'required',    // date - filter data
-            ]);
-
-            $user = Auth::user();
-            if (!$user) {
-                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
-            }
-
-            // Retrieve user's location history
-            $latestHistory = DB::table('location_history as lh')
-                ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
-                ->where('lh.user_id', $request->user_id)                // Filter by child user id
-                ->whereDate('lh.datetime', $request->date)              // Filter by date only
-                ->where('u.location_status', 'on')                      // Ensure user has location_status 'on'
-                ->select('lh.*', 'u.name', 'u.profile_pic')             // Select necessary fields from both tables
-                ->get();
-
-            if ($latestHistory->isEmpty()) {
-                return $this->sendError('No data found for this user and date.', 404);
-            }
-
-            // Initialize variables to track total distance and total time
-            $totalDistance = 0;
-            $startTime = null;
-            $endTime = null;
-
-            // Map through the location data
-            $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
-
-                static $holdStartTime = null; // Track when the hold starts
-                static $isHolding = false;   // Track if the user is holding
-                static $currentLocation = null; // Track the current hold location
-
-                if ($index == 0) {
-                    // Set the start time
-                    $startTime = new DateTime($item->datetime);
-                }
-
-                if ($index == $latestHistory->count() - 1) {
-                    // Set the end time
-                    $endTime = new DateTime($item->datetime);
-                }
-
-                // Calculate the distance between consecutive records using the Haversine formula
-                if ($index > 0) {
-                    $previousItem = $latestHistory[$index - 1];
-                    $distance = $this->haversineGreatCircleDistance(
-                        $previousItem->lattitude,
-                        $previousItem->longitude,
-                        $item->lattitude,
-                        $item->longitude
-                    );
-                    $totalDistance += $distance; // Accumulate total distance
-
-                    // Check if the user is holding
-                    if ($distance < 0.01) { // Threshold in KM (10 meters)
-                        if (!$isHolding) {
-                            $holdStartTime = new DateTime($previousItem->datetime);
-                            $isHolding = true;
-                        }
-
-                        $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
-                        $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
-
-                        if ($holdMinutes >= 10) { // Threshold in minutes
-                            $item->hold_status = 'on';
-                        } else {
-                            $item->hold_status = 'off';
-                        }
-                    } else {
-                        $isHolding = false;
-                        $item->hold_status = 'off';
-                    }
-                } else {
-                    $item->hold_status = 'off'; // Default for the first record
-                }
-
-                return [
-                    'user_id'      => $item->user_id,
-                    'phone_battery_status'  => $item->phone_battery_status,
-                    'user_name'    => $item->name,
-                    'profile_pic'  => $item->profile_pic,
-                    'lattitude'    => $item->lattitude,
-                    'longitude'    => $item->longitude,
-                    'address'      => $item->address,
-                    'user_speed'   => $item->user_speed,
-                    'phone_bettery'=> $item->phone_bettery,
-                    'datetime'=> $item->datetime,
-                    'hold_status'      => $item->hold_status, // Include hold status
-                ];
-            })->all();
-
-            // $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
-            // ->select('id','zone_km','user_lattitude','user_longitude')->first();
-             $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
-            ->select('zone_km','geojson','noti_status')->first();
-
-
-            // Calculate total time spent
-            $timeSpent = $startTime->diff($endTime);
-            // Return the response with total distance and time spent
-            $response = [
-                'total_distance'=> round($totalDistance, 2) . ' KM',        // Total distance traveled in KM
-                'total_time'    => $timeSpent->format('%h hours %i minutes'), // Total time spent in hours and minutes
-                'zone_data'     => $zone,
-                'user_data'     => $result
-            ];
-
-            // Encrypt and send the response
-            $encryptedResponse = $this->encryptData($response);
-            return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
-        } catch (ValidationException $e) {
-
-           return $this->sendError($e->validator->errors()->first(), 422);
-        } catch (\Exception $e) {
-            return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
-        }
-    }*/ 
+    } 
 
     ############################# COMMON METHODS ########################
+    
+    function haversineDistance($lat1, $lon1, $lat2, $lon2) 
+    {
+        $earthRadius = 6371000; // Earth's radius in meters
+    
+        $lat1 = deg2rad($lat1);
+        $lon1 = deg2rad($lon1);
+        $lat2 = deg2rad($lat2);
+        $lon2 = deg2rad($lon2);
+    
+        $latDiff = $lat2 - $lat1;
+        $lonDiff = $lon2 - $lon1;
+    
+        $a = sin($latDiff / 2) * sin($latDiff / 2) +
+             cos($lat1) * cos($lat2) * sin($lonDiff / 2) * sin($lonDiff / 2);
+        $c = 2 * atan2(sqrt($a), sqrt(1 - $a));
+    
+        return $earthRadius * $c; // Distance in meters
+    }
+
+
     private function validateRequest($request)
     {
         $request->validate([
@@ -1627,4 +1586,259 @@ class ApiController extends BaseController
         }
         DB::table('user_notifications')->insert($notificationData);
     }
+
+
+    ############################# Old METHODS APIS ########################
+   
+        # singal location data store
+        /* public function update_location(Request $request)  # queue notification (outside zone)
+        {
+            try {
+                $request->validate([
+                    'lattitude' => 'required',
+                    'longitude' => 'required',
+                    'address' => 'required',
+                    'phone_bettery' => 'required',
+                    'user_speed' => 'required',
+                    'phone_battery_status' => 'required',
+                    'today_date' => 'required',
+                    'course' => 'required',
+                    'accuracy' => 'required',
+                    'isMock' => 'required',
+                ]);
+                $user = Auth::user();
+                if ($user) {              
+                    # Prepare location data for insertion
+                    $data = array_merge($request->all(), [
+                        'datetime' => $request->today_date,
+                        'user_id' => $user->id
+                    ]);
+                    unset($data['today_date']);
+                    LocationHistoryModel::create($data);
+                    
+                    # USER STATUS UPDATE
+                    $join_status = JoinUserModel::where(['child_user_id'=>$user->id,'is_deleted'=>0])->get();
+                    foreach ($join_status as $key => $value1) {
+                        $value1->update(['phone_battery_status'=>$request->phone_battery_status]);
+                    }
+                    
+                    # OUT SIDE ZONE NOTIFICATION
+                    // Get all GeoJSON records for the child user with 'noti_status' as 'on'
+                    $geojsonDataList = GeoJson::where('child_user_id', $user->id)->where('noti_status', 'on')->get();
+                    if ($geojsonDataList->isNotEmpty()) {
+
+                        foreach ($geojsonDataList as $geojsonData) {
+                            $geojsonString = is_array($geojsonData->geojson) ? json_encode($geojsonData->geojson) : $geojsonData->geojson;
+
+                            $geometry = DB::selectOne("
+                                SELECT ST_Contains(
+                                    ST_GeomFromGeoJSON(?),
+                                    ST_GeomFromText(CONCAT('POINT(', ?, ' ', ?, ')'))
+                                ) AS is_inside", [$geojsonString, $request->longitude, $request->latitude]);
+
+                            if (!$geometry->is_inside) {
+                                $parentUserId = $geojsonData->parent_user_id; // Get the parent user ID
+                                $title = $user->name . " is going outside the restricted area";
+                                $noti_data = [
+                                    'noti_date' => $request->today_date,
+                                    'msg' => "Going outside the restricted area",
+                                    'noti_type' => "outside_zone",
+                                ];
+                                // Dispatch notification for each parent user
+                                SendNotificationJob::dispatch($user, $parentUserId, $title, $noti_data);
+                            }
+                        }
+                    }
+
+                    $parent_count = JoinUserModel::where(['child_user_id'=>$user->id,'is_deleted'=>0])->count();
+                    $data['located_parent_user'] = $parent_count;
+
+                    $encryptedResponse = $this->encryptData($data);
+                    return $this->sendResponse($encryptedResponse, 'User location updated successfully');
+                }
+                return $this->sendError("user not found");
+            } catch (ValidationException $e) {
+            return $this->sendError($e->validator->errors()->first(), 422);
+            } catch (\Exception $e) {
+                return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+            }
+        } */
+
+      # ALL USER LIST # 11 limit
+      public function old_get_home_data_old(Request $request) # without parent remove history status
+      {
+          $user = Auth::user();
+          if (!$user) {
+              return $this->sendError('Authentication failed! The provided token is invalid, and the specified user could not be located', 401);
+          }
+          try {
+              $join_user_ids = DB::table('join_user')->where('parent_user_id', $user->id)->pluck('child_user_id')->toArray();
+              if (!empty($join_user_ids)) {
+  
+                  $join_user_ids_str = implode(',', $join_user_ids); // Convert array to comma-separated string
+                  $latestHistory = DB::table('location_history as lh')
+                      ->join(
+                          DB::raw('(SELECT user_id, MAX(id) as latest_id
+                                      FROM location_history
+                                      WHERE user_id IN ('.$join_user_ids_str.')
+                                      GROUP BY user_id) as latest'),
+                          'lh.id', '=', 'latest.latest_id'
+                      )                                                // users latest location data
+                      ->join('users as u', 'lh.user_id', '=', 'u.id')  // Join the users table
+                      ->whereIn('lh.user_id', $join_user_ids)          // Filter by parent_user_id
+                      ->where('u.location_status', 'on')               // Ensure user has location_status 'on'
+                      ->select('lh.*', 'u.name', 'u.profile_pic')      // Select necessary fields from both tables
+                      ->limit(11)                                      // Limit the results to 11
+                      ->get();
+              } else {
+                  // Handle the case where there are no child_user_ids
+                  $latestHistory = collect(); // Return an empty collection or handle it as needed
+              }
+  
+              $result = $latestHistory->map(function ($item) {
+                  return [
+                      'id'          => $item->id,
+                      'user_id'     => $item->user_id,
+                      'user_name'   => $item->name,
+                      'phone_battery_status' => $item->phone_battery_status,
+                      'profile_pic' => $item->profile_pic,
+                      'lattitude'   => $item->lattitude,
+                      'longitude'   => $item->longitude,
+                      'address'     => $item->address,
+                      'user_speed'  => $item->user_speed,
+                  ];
+              })->all();
+  
+              $encryptedResponse = $this->encryptData($result);
+              return $this->sendResponse($encryptedResponse, 'User data get successfully');
+          } catch (\Exception $e) {
+              return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+          }
+      }
+  
+      /*# USER LOCATION HISTORY DATE WISE WITH JOIN DATA
+      public function user_location_details(Request $request)  # with hold status # without parent remove history status
+      {
+          try {
+              $request->validate([
+                  'user_id' => 'required', // child user id
+                  'date' => 'required',    // date - filter data
+              ]);
+  
+              $user = Auth::user();
+              if (!$user) {
+                  return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
+              }
+  
+              // Retrieve user's location history
+              $latestHistory = DB::table('location_history as lh')
+                  ->join('users as u', 'lh.user_id', '=', 'u.id')         // Join the users table
+                  ->where('lh.user_id', $request->user_id)                // Filter by child user id
+                  ->whereDate('lh.datetime', $request->date)              // Filter by date only
+                  ->where('u.location_status', 'on')                      // Ensure user has location_status 'on'
+                  ->select('lh.*', 'u.name', 'u.profile_pic')             // Select necessary fields from both tables
+                  ->get();
+  
+              if ($latestHistory->isEmpty()) {
+                  return $this->sendError('No data found for this user and date.', 404);
+              }
+  
+              // Initialize variables to track total distance and total time
+              $totalDistance = 0;
+              $startTime = null;
+              $endTime = null;
+  
+              // Map through the location data
+              $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
+  
+                  static $holdStartTime = null; // Track when the hold starts
+                  static $isHolding = false;   // Track if the user is holding
+                  static $currentLocation = null; // Track the current hold location
+  
+                  if ($index == 0) {
+                      // Set the start time
+                      $startTime = new DateTime($item->datetime);
+                  }
+  
+                  if ($index == $latestHistory->count() - 1) {
+                      // Set the end time
+                      $endTime = new DateTime($item->datetime);
+                  }
+  
+                  // Calculate the distance between consecutive records using the Haversine formula
+                  if ($index > 0) {
+                      $previousItem = $latestHistory[$index - 1];
+                      $distance = $this->haversineGreatCircleDistance(
+                          $previousItem->lattitude,
+                          $previousItem->longitude,
+                          $item->lattitude,
+                          $item->longitude
+                      );
+                      $totalDistance += $distance; // Accumulate total distance
+  
+                      // Check if the user is holding
+                      if ($distance < 0.01) { // Threshold in KM (10 meters)
+                          if (!$isHolding) {
+                              $holdStartTime = new DateTime($previousItem->datetime);
+                              $isHolding = true;
+                          }
+  
+                          $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
+                          $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
+  
+                          if ($holdMinutes >= 10) { // Threshold in minutes
+                              $item->hold_status = 'on';
+                          } else {
+                              $item->hold_status = 'off';
+                          }
+                      } else {
+                          $isHolding = false;
+                          $item->hold_status = 'off';
+                      }
+                  } else {
+                      $item->hold_status = 'off'; // Default for the first record
+                  }
+  
+                  return [
+                      'user_id'      => $item->user_id,
+                      'phone_battery_status'  => $item->phone_battery_status,
+                      'user_name'    => $item->name,
+                      'profile_pic'  => $item->profile_pic,
+                      'lattitude'    => $item->lattitude,
+                      'longitude'    => $item->longitude,
+                      'address'      => $item->address,
+                      'user_speed'   => $item->user_speed,
+                      'phone_bettery'=> $item->phone_bettery,
+                      'datetime'=> $item->datetime,
+                      'hold_status'      => $item->hold_status, // Include hold status
+                  ];
+              })->all();
+  
+              // $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
+              // ->select('id','zone_km','user_lattitude','user_longitude')->first();
+               $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
+              ->select('zone_km','geojson','noti_status')->first();
+  
+  
+              // Calculate total time spent
+              $timeSpent = $startTime->diff($endTime);
+              // Return the response with total distance and time spent
+              $response = [
+                  'total_distance'=> round($totalDistance, 2) . ' KM',        // Total distance traveled in KM
+                  'total_time'    => $timeSpent->format('%h hours %i minutes'), // Total time spent in hours and minutes
+                  'zone_data'     => $zone,
+                  'user_data'     => $result
+              ];
+  
+              // Encrypt and send the response
+              $encryptedResponse = $this->encryptData($response);
+              return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
+          } catch (ValidationException $e) {
+  
+             return $this->sendError($e->validator->errors()->first(), 422);
+          } catch (\Exception $e) {
+              return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
+          }
+      }*/ 
+
 }
