@@ -11,16 +11,17 @@ Route::group(['middleware' => ['throttle:60,1'], 'as' => 'api.'], function () {
     # AUTH APIS
     Route::controller(AuthController::class)->group(function () {
         Route::post('social_login', 'social_login')->name('login');
-        Route::post('refresh_token', 'refresh_token');    
+        Route::post('refresh_token', 'refresh_token');   
+        Route::post('app_common_data', 'app_common_data');   
 
-        Route::middleware('auth')->group( function () {
+        // Route::middleware('auth')->group( function () {
             Route::post('user_logout', 'user_logout');
             Route::post('edit_user', 'edit_user');
             Route::post('user_profile', 'user_profile');
             Route::post('verify_token', 'verify_token');
            
             Route::post('get_privacy', 'get_privacy');    
-        });
+        // });
     });
  
     # GENERAL APIS
@@ -56,10 +57,10 @@ Route::group(['middleware' => ['throttle:60,1'], 'as' => 'api.'], function () {
     # NOTIFICATION APIS
     Route::controller(NotificationController::class)->group(function () {
 
-        Route::middleware('auth')->group( function () {
+        // Route::middleware('auth')->group( function () {
             Route::post('send_call_notification', 'send_call_notification');   
             Route::post('notification_list', 'notification_list');   
-        });
+        // });
     });
 
 });

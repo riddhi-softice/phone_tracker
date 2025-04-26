@@ -89,15 +89,17 @@ class NotificationController extends BaseController
                 $notificationSendData['noti_type'] = "sos_call";
                 // dd($notificationSendData);
                 $result = $this->firebaseService->sendDataMessage($notificationSendData);
-
-                dd($result);
                 
                 # STORE NOTIFICATION DATA
-                $noti_date = date('Y-m-d H:i:s'); 
+                // $noti_date = date('Y-m-d H:i:s'); 
+                $dt = new \DateTime('now', new \DateTimeZone('UTC'));
+                $noti_date = $dt->format("Y-m-d\TH:i:s.v\Z");
+
+
                 $input = ['sender_user_id'=>$user->id, 'receiver_user_id'=>$request->receiver_user_id,'title'=>"Calling you",'noti_type'=>"sos_call",'noti_date'=>$noti_date];
                 DB::table('user_notifications')->insert($input);
 
-                return $this->sendResponse([], 'Notification sent successfully.');
+                return $this->sendResponse("", 'Notification sent successfully.');
             }
         } catch (ValidationException $e) {
             return $this->sendError($e->validator->errors()->first(), 422);
@@ -131,7 +133,7 @@ class NotificationController extends BaseController
                 DB::table('user_notifications')->insert($input);
 
 
-                return $this->sendResponse([], 'Notification sent successfully.');
+                return $this->sendResponse("", 'Notification sent successfully.');
             }
         } catch (ValidationException $e) {
 
@@ -143,7 +145,7 @@ class NotificationController extends BaseController
     
     public function notification_list(Request $request)
     {
-            try {
+        try {
             $perPage = $request->input('per_page', 10);
             $pageNumber = $request->input('page_no', 1);
 
@@ -159,6 +161,7 @@ class NotificationController extends BaseController
                 'user_notifications.sender_user_id',
                 'user_notifications.title',
                 'user_notifications.noti_date',
+                'user_notifications.noti_type',
                 'users.name as user_name',
                 'users.profile_pic'
             )
@@ -170,6 +173,8 @@ class NotificationController extends BaseController
                     'user_name'     => $value->user_name,
                     'profile_pic'   => $value->profile_pic,
                     'title'   => $value->title,
+                    'noti_date'   => $value->noti_date,
+                    'noti_type'   => $value->noti_type,
                 ];
             });
 

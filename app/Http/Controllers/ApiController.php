@@ -23,7 +23,164 @@ use Carbon\Carbon;
 define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
-{
+{   
+   
+    # multiple location data store from array
+    public function update_location(Request $request)  # Queue notification (outside zone,safe zone)
+    {
+        try {
+            // Log::info('Location update request received', ['request_data' => $request->all()]);
+            $request->validate([
+                'locations' => 'required|array',
+                'locations.*.lattitude' => 'required|numeric',
+                'locations.*.longitude' => 'required|numeric',
+                'locations.*.address' => 'required|string',
+                'locations.*.phone_bettery' => 'required|integer',
+                'locations.*.user_speed' => 'required|numeric',
+                'locations.*.phone_battery_status' => 'required|string',
+                'locations.*.today_date' => 'required|date',
+                'locations.*.course' => 'required|numeric',
+                'locations.*.accuracy' => 'required|numeric',
+                'locations.*.isMock' => 'required|boolean',
+            ]);
+            $user = Auth::user();
+            if (!$user) {
+                // Log::warning('User not found during location update', ['request_data' => $request->all()]);
+                return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located", 401);
+            }
+            
+            // Log::info('Processing locations for user', ['user_id' => $user->id]);
+            // Process each location in the array
+            $locations = $request->input('locations');
+            foreach ($locations as $location) {
+                // Log::debug('Processing location', ['location' => $location]);
+                
+                $check = DB::table('location_history')->where('lattitude',$location['lattitude'])->where('longitude',$location['longitude'])->where('user_id',$user->id)->where('datetime',$location['today_date'])->exists();
+                if($check){
+                    Log::info('same locations ', ['location' => $location]);
+                    continue;
+                }
+                 
+                $maxValue = 9999999999.9999999;  // For DECIMAL(17,7), this is the max value
+                $minValue = -9999999999.9999999; // For DECIMAL(17,7), this is the min value
+                $course = number_format($location['course'], 7, '.', '');
+                $accuracy = number_format($location['accuracy'], 7, '.', '');
+
+                if ($accuracy > $maxValue || $accuracy < $minValue) {
+                    Log::info('Accuricy out of range:', ['accuracy' => $accuracy]);
+                    $accuracy = '0.0000000';  // Default value for accuracy
+                }
+                if ($course > $maxValue || $course < $minValue) {
+                    Log::info('Course out of range:', ['course' => $course]);
+                    $course = '0.0000000';  // Default value for course
+                }
+                if ($location['address'] == "Address not found") {
+                    $location['address'] = $this->getAddressFromLatLongHere($location['lattitude'], $location['longitude']);
+                }
+                # Prepare location data for insertion
+                $data = array_merge($location, [
+                    'datetime' => $location['today_date'],
+                    'user_id' => $user->id,
+                    'course' => $course, // Format course to 7 decimal places
+                    'accuracy' => $accuracy, // Format accuracy to 7 decimal places
+                ]);
+
+                unset($data['today_date']);
+                LocationHistoryModel::create($data);
+                // Log::info('Location saved to database', ['user_id' => $user->id]);
+
+                # Update user status
+                $join_status = JoinUserModel::where(['child_user_id' => $user->id, 'is_deleted' => 0])->get();
+                foreach ($join_status as $key => $value1) {
+                    $value1->update(['phone_battery_status' => $location['phone_battery_status']]);
+                }
+                // Log::info('User status updated', ['user_id' => $user->id]);
+                
+                # ZONE NOTIFICATION ZONE DATA
+                $safeZones = SafeZoneModel::where(['child_user_id' => $user->id,'noti_status' => 'on'])->get();
+                if ($safeZones->isNotEmpty()) {
+                    $parentUserId = []; 
+                    $safeParentUserId = [];
+
+                    foreach ($safeZones as $safeZone) {
+                        $distance = $this->haversineGreatCircleDistanceZone(
+                            $safeZone->zone_lattitude,  
+                            $safeZone->zone_longitude,  
+                            $location['lattitude'],
+                            $location['longitude']
+                        );
+                        
+                        # OUTSIDE ZONE USERS 
+                        if ($distance > ($safeZone->zone_meter)) {
+                            // $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
+                            $parentUserId[] = $safeZone->parent_user_id; 
+                            
+                            SafeZoneModel::where(['parent_user_id'=> $safeZone->parent_user_id, 'child_user_id'=>$user->id])->update(['user_zone'=>'outside_zone']);
+                        }
+                        
+                        # INSIDE SAFE ZONE USERS
+                        $lastZoneStatus = SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->value('user_zone');
+                        if ($distance <= $safeZone->zone_meter) {
+
+                            // If user was previously outside, now update status to "safe_zone"
+                            if ($lastZoneStatus === 'outside_zone') {
+                                $safeParentUserId[] = $safeZone->parent_user_id;
+                                SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->update(['user_zone' => 'safe_zone']);
+                            }
+                        }
+                    }
+                
+                    // $safeParentUserId = [7,8]; // testing
+                    
+                    if (!empty($safeParentUserId)) {
+                        $noti_data = [
+                            'sender_user_id' => $user->id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg' => "User is back in the safe zone",
+                            'noti_type' => "safe_zone",
+                            'noti_title' => "Safe Zone Entry",
+                            'noti_desc' =>  $user->name . " has returned to the safe zone."
+                        ];
+                        SendNotificationJob::dispatch($user, $safeParentUserId, $noti_data);
+                    }
+                    
+                    if (!empty($parentUserId)) {
+                        $noti_data = [
+                            'sender_user_id' => $user->id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg' => "Alert: Restricted Area Breach!",
+                            'noti_type' => "outside_zone",
+                            'noti_title' => "Alert: Restricted Area Breach!",
+                            'noti_desc' =>  $user->name ."has moved outside the restricted area."
+                        ];
+                        // $this->zone_noti($user, $parentUserId, $title, $noti_data);  // testing purpose
+                        SendNotificationJob::dispatch($user, $parentUserId,$noti_data);
+                    }
+                }
+            }
+
+            # Calculate parent count
+            $parent_count = JoinUserModel::where(['child_user_id' => $user->id, 'is_deleted' => 0])->count();
+            $responseData['located_parent_user'] = $parent_count;
+            $responseData['locations'] = $locations;
+
+            $encryptedResponse = $this->encryptData($responseData);
+            // Log::info('User locations updated successfully', ['user_id' => $user->id]);
+             
+            return $this->sendResponse($encryptedResponse, 'User locations updated successfully');
+        } catch (ValidationException $e) {
+            // Log::error('Validation failed during location update', ['errors' => $e->validator->errors()]);
+            return $this->sendError($e->validator->errors()->first(), 422);
+        } catch (\Exception $e) {
+            // Log::error('Unexpected error occurred', ['error' => $e->getMessage()]);
+            return $this->sendError('An unexpected error occurred: ' . $e->getMessage(), 500);
+        }
+    }
+
     public function delete_zone(Request $request)
     {
         try {
@@ -38,7 +195,7 @@ class ApiController extends BaseController
             if($data){
 
                 $data->delete();
-                return $this->sendResponse([], 'The user zone has been removed successfully.');
+                return $this->sendResponse("", 'The user zone has been removed successfully.');
             } else {
                 return $this->sendError('Unable to find the specified user zone.', 400);
             }
@@ -70,10 +227,7 @@ class ApiController extends BaseController
                 ->select([
                     'u.name as user_name',
                     'u.profile_pic',
-                        'sz.id',
-                    'sz.zone_name',
-                    'sz.zone_type',
-                    'sz.zone_address',
+                    'sz.*'
                 ])->get();
         
             // Merge each zone with location info
@@ -85,6 +239,10 @@ class ApiController extends BaseController
                     'zone_name'     => $zone->zone_name,
                     'zone_type'     => $zone->zone_type,
                     'zone_address'  => $zone->zone_address,
+                    'zone_meter'    => $zone->zone_meter,
+                    'zone_lattitude'    => $zone->zone_lattitude,
+                    'zone_longitude'    => $zone->zone_longitude,
+                    'noti_status'    => $zone->noti_status,
                     'phone_bettery' => $location->phone_bettery ?? null,
                     'user_speed'    => $location->user_speed ?? null,
                 ];
@@ -100,21 +258,23 @@ class ApiController extends BaseController
         }
     }
 
-    public function user_location_details(Request $request)  # with hold status and latest zone data
+    public function user_location_details(Request $request)  # with hold status and geo-json data
     {
         try {
             $request->validate([
-                'user_id' => 'required',     // child user id
-                'start_date' => 'required',  // date - filter data
-                'end_date' => 'required',    // date - filter data
+                'user_id' => 'required',    // child user id
+                // 'date' => 'required',    // date - filter data
+                // 'start_date' => 'required',    // date - filter data
+                // 'end_date' => 'required',    // date - filter data
             ]);
             $user = Auth::user();
             if (!$user) {
                 return $this->sendError("Authentication failed! The provided token is invalid, and the specified user could not be located.", 401);
             }
-            $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
+            // $history_date = JoinUserModel::where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=>0])->pluck('history_remove_date')->first();
+             $history_date = DB::table('join_user')->where(['parent_user_id'=>$user->id,'child_user_id'=>$request->user_id,'location_history_status'=>"is_removed",'is_deleted'=> 0])
                             ->select('history_remove_start_date','history_remove_date')->first();
-            
+
             # Retrieve user's location history
             $query = DB::table('location_history as lh')
                 ->join('users as u', 'lh.user_id', '=', 'u.id')         
@@ -127,7 +287,7 @@ class ApiController extends BaseController
                 if($history_date){
                      $query->whereNotBetween('lh.datetime', [$history_date->history_remove_start_date, $history_date->history_remove_date]);
                 }
-                $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();    
+                $latestHistory = $query->select('lh.*', 'u.name', 'u.profile_pic')->get();  
 
             # Initialize variables to track total distance and total time
             $totalDistance = 0;
@@ -138,13 +298,11 @@ class ApiController extends BaseController
 
             # Map through the location data
             if($latestHistory->isNotEmpty()){
-             
-                $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
 
+                $result = $latestHistory->map(function ($item, $index) use (&$totalDistance, &$startTime, &$endTime, $latestHistory) {
                     static $holdStartTime = null; # Track when the hold starts
                     static $isHolding = false;   # Track if the user is holding
                     static $currentLocation = null; # Track the current hold location
-
                     if ($index == 0) {
                         # Set the start time
                         $startTime = new DateTime($item->datetime);
@@ -153,7 +311,6 @@ class ApiController extends BaseController
                         # Set the end time
                         $endTime = new DateTime($item->datetime);
                     }
-
                     # Calculate the distance between consecutive records using the Haversine formula
                     if ($index > 0) {
                         $previousItem = $latestHistory[$index - 1];
@@ -164,17 +321,17 @@ class ApiController extends BaseController
                             $item->longitude
                         );
                         $totalDistance += $distance; # Accumulate total distance
-
+    
                         # Check if the user is holding
                         if ($distance < 0.01) { # Threshold in KM (10 meters)
                             if (!$isHolding) {
                                 $holdStartTime = new DateTime($previousItem->datetime);
                                 $isHolding = true;
                             }
-
+    
                             $holdDuration = $holdStartTime->diff(new DateTime($item->datetime));
                             $holdMinutes = ($holdDuration->h * 60) + $holdDuration->i;
-
+    
                             if ($holdMinutes >= 10) { # Threshold in minutes
                                 $item->hold_status = 'on';
                             } else {
@@ -188,6 +345,7 @@ class ApiController extends BaseController
                         $item->hold_status = 'off'; # Default for the first record
                     }
                     return [
+                        // 'id'      => $item->id,
                         'user_id'      => $item->user_id,
                         'phone_battery_status'  => $item->phone_battery_status,
                         'user_name'    => $item->name,
@@ -201,31 +359,31 @@ class ApiController extends BaseController
                         'hold_status'  => $item->hold_status, // Include hold status
                         'course'       => $item->course,
                         'accuracy'     => $item->accuracy,  
-                        'isMock'     =>  $item->isMock == 1 ? true : false,
+                        'isMock'        => $item->isMock == 1 ? true : false,
                     ];
                 })->all();
+                
                 $timeSpent = $startTime->diff($endTime);  // Calculate total time spent
-                $total_time = $timeSpent->format('%h hours %i minutes');
+                $total_time = $timeSpent->format('%h hours %i minutes');       // Total time spent in hours and minutes
             }
 
-            // $zone = DB::table('geo_jsons')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])->select('zone_km','geojson','noti_status')->first();
             $zone = DB::table('safe_zone')->where(['child_user_id'=>$request->user_id, 'parent_user_id'=>$user->id])
-            ->select('zone_meter','zone_lattitude','zone_longitude','zone_type')->orderBy('id','desc')->first();
+            ->select('zone_meter','zone_lattitude','zone_longitude','zone_type','id AS zone_id','zone_name','zone_address','noti_status')->orderBy('id','desc')->get();
             $response = [
                 'total_distance'=> round($totalDistance, 2) . ' KM',            // Total distance traveled in KM
-                'total_time'    => $total_time,                                 // Total time spent in hours and minutes
+                'total_time'    => $total_time, 
                 'zone_data'     => $zone,
                 'user_data'     => $result
             ];
-            // Encrypt and send the response
+
             $encryptedResponse = $this->encryptData($response);
-            return $this->sendResponse($response, 'User data retrieved successfully');
+            return $this->sendResponse($encryptedResponse, 'User data retrieved successfully');
         } catch (ValidationException $e) {
            return $this->sendError($e->validator->errors()->first(), 422);
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
-    } 
+    }
 
     public function user_hold_location_details(Request $request)  # with hold status and unique location
     {
@@ -622,7 +780,7 @@ class ApiController extends BaseController
         } catch (\Exception $e) {
             return $this->sendError('An unexpected error occurred: ' . $e->getMessage());
         }
-    }
+    } 
 
     public function check_version(Request $request)
     {
@@ -813,7 +971,7 @@ class ApiController extends BaseController
 
             // Step 7: Return success or failure response based on the state
             if ($payment_status === 'Success') {
-                return $this->sendResponse([], 'Payment was successful.');
+                return $this->sendResponse("", 'Payment was successful.');
             } else {
                 return $this->sendError($reason, 400);
             }
@@ -1098,7 +1256,7 @@ class ApiController extends BaseController
                 if($join_data == 0){
                     LocationHistoryModel::where(['user_id'=>$request->child_user_id])->delete();
                 }
-                return $this->sendResponse([], 'The user has successfully disconnected.');
+                return $this->sendResponse("", 'The user has successfully disconnected.');
             } else {
                 return $this->sendError('User is currently not connected.', 400);
             }
@@ -1131,7 +1289,8 @@ class ApiController extends BaseController
             if ($data) {
                 # START DATE TO END DATE DATA REMOVE ONLY
                 $data->update(['location_history_status'=>'is_removed','history_remove_start_date'=>$request->start_date,'history_remove_date'=>$request->end_date]);
-                return $this->sendResponse([], 'User location history remove successfully');
+                // return $this->sendResponse("", 'User location history remove successfully');
+                return $this->sendResponseSuccess('User location history remove successfully');
             } else {
                 return $this->sendError('User is currently not connected', 400);
             }
@@ -1222,18 +1381,34 @@ class ApiController extends BaseController
             $result = [];
             foreach ($latestHistory as $item) {
                 // Check the remove date
-                $remove_date = DB::table('join_user')
+                $remove_date  = DB::table('join_user')
                     ->where([
                         'parent_user_id' => $user->id,
                         'child_user_id' => $item->user_id,
                         'location_history_status' => 'is_removed',
                         'is_deleted' => 0
                     ])
+                    // ->select('history_remove_start_date', 'history_remove_date')
                     ->pluck('history_remove_date')
                     ->first();
 
                 // dd($item->datetime ."   >=   ". $remove_date);
-                if (!$remove_date || $item->datetime >= $remove_date) {
+                // if (!$remove_date || $item->datetime >= $remove_date) {
+
+                // Check if datetime is outside the removed range or if no removal exists
+                // $include = true;
+                // if ($removal) {
+                //     if ($item->datetime >= $removal->history_remove_start_date && $item->datetime <= $removal->history_remove_date) {
+                //         $include = false;
+                //     }
+                // }
+
+                // if ($include) {
+
+                // if ( $removal && $removal->history_remove_start_date && $removal->history_remove_date &&
+                //     ($item->datetime < $removal->history_remove_start_date || $item->datetime > $removal->history_remove_date)) 
+                // {
+                if ($remove_date || $item->datetime >= $remove_date) {
                     $result[] = [
                         'id' => $item->id,
                         'user_id' => $item->user_id,

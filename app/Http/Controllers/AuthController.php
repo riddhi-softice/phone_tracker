@@ -12,9 +12,47 @@ use Tymon\JWTAuth\Exceptions\JWTException;
 use PHPOpenSourceSaver\JWTAuth\Facades\JWTAuth;
 use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenExpiredException;
 use PHPOpenSourceSaver\JWTAuth\Exceptions\TokenInvalidException;
+use Illuminate\Support\Facades\Cache;
+
 
 class AuthController extends BaseController
 {
+    public function app_common_data(Request $request)
+    {
+        //  \Log::info("common setting..: ". request()->ip()); 
+        
+        $cacheKey = 'common_setting_data';
+        $settings = Cache::remember($cacheKey, 1440, function() {
+            return DB::table('common_settings')->where('setting_key','!=','admin_ip')->get();
+        });
+        
+        // $settings = DB::table('common_settings')
+        // ->where('setting_key', '!=', 'admin_ip')
+        // ->get();   
+    
+        $formattedSettings = [];
+        foreach ($settings as $setting) {
+            $decodedValue = json_decode($setting->setting_value, true);
+            $value = is_array($decodedValue) ? $decodedValue : $setting->setting_value;
+        
+            if ($setting->setting_key === 'privacy_policy') {
+                // Directly set privacy_policy
+                $formattedSettings['privacy_policy'] = $value;
+            } else {
+                // Group everything else under app_update_dialog
+                if (in_array($setting->setting_key, ['action_button', 'action_button_text'])) {
+                    // Specially handle action_button nested array
+                    $formattedSettings['app_update_dialog']['action_button'][$setting->setting_key] = $value;
+                } else {
+                    $formattedSettings['app_update_dialog'][$setting->setting_key] = $value;
+                }
+            }
+        }        
+        
+        $encryptedData = $this->encryptData($formattedSettings);
+        return $this->sendResponse($formattedSettings, 'Data get Successfully!');
+    }
+
     public function social_login(Request $request) # version
     {
         try {
