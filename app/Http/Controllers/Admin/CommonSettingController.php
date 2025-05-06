@@ -9,13 +9,14 @@ use App\Models\CommonSetting;
 class CommonSettingController extends Controller
 {
     public function get_setting()
-    {
+    { 
         $settings = CommonSetting::get();
         return view('settings.common_create', compact('settings'));
     }
 
     public function change_setting(Request $request)
     {
+        dd($request->all());
         foreach ($request->all() as $key => $value) {
             # Check if the value is an array and convert it to a comma-separated string
             if (is_array($value)) {

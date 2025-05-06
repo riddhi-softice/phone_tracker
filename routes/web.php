@@ -39,7 +39,7 @@ Route::get('privacypolicy', function () {
     Route::get('login', [AuthController::class, 'index'])->name('login');
     Route::post('post-login', [AuthController::class, 'postLogin'])->name('login.post');
 
-    Route::middleware(['2fa','session.timeout','admin'])->group(function () {
+    // Route::middleware(['2fa','session.timeout','admin'])->group(function () {
 
         Route::resource('users', UserController::class);
         Route::get('get_purchase_list', [UserController::class, 'get_purchase_list'])->name('get_purchase_list');
@@ -56,7 +56,7 @@ Route::get('privacypolicy', function () {
         Route::post('change_privacy', [CommonSettingController::class, 'change_privacy'])->name('change_privacy');
 
         Route::resource('app_notification', AppNotificationController::class);
-    });
+    // });
 
 // });
 

@@ -31,7 +31,7 @@
                                 <a href="{{ route('users.create') }}" class="btn btn-primary">Add User</a>
                             </div> --}}
                         </div>
-                        <table class="table data-table text-capitalize" id="table_Data">
+                        <table class="table data-table" id="table_Data">
                             <thead>
                                 <tr>
                                     <th>Name</th>
@@ -42,7 +42,6 @@
                                 </tr>
                             </thead>
                             <tbody>
-
                             </tbody>
                         </table>
                     </div>

@@ -1360,18 +1360,32 @@ class ApiController extends BaseController
             $join_user_ids = DB::table('join_user')->where(['parent_user_id'=>$user->id,'is_deleted' => 0])->pluck('child_user_id')->toArray();
             if (!empty($join_user_ids)) {
 
-                $join_user_ids_str = implode(',', $join_user_ids);   // Convert array to comma-separated string
-                $query = DB::table('location_history as lh')
-                    ->join(DB::raw('(SELECT user_id, MAX(id) as latest_id
-                                    FROM location_history
-                                    WHERE user_id IN ('.$join_user_ids_str.')
-                                    GROUP BY user_id) as latest'),
-                                    'lh.id', '=', 'latest.latest_id') // users latest location data
-                    ->join('users as u', 'lh.user_id', '=', 'u.id')   // Join the users table
-                    ->whereIn('lh.user_id', $join_user_ids)           // Filter by parent_user_id
-                    ->where('u.location_status', 'on');               // Ensure user has location_status 'on'
+                // $join_user_ids_str = implode(',', $join_user_ids);   // Convert array to comma-separated string
+                // $query = DB::table('location_history as lh')
+                //     ->join(DB::raw('(SELECT user_id, MAX(id) as latest_id
+                //                     FROM location_history
+                //                     WHERE user_id IN ('.$join_user_ids_str.')
+                //                     GROUP BY user_id) as latest'),
+                //                     'lh.id', '=', 'latest.latest_id') // users latest location data
+                //     ->join('users as u', 'lh.user_id', '=', 'u.id')   // Join the users table
+                //     ->whereIn('lh.user_id', $join_user_ids)           // Filter by parent_user_id
+                //     ->where('u.location_status', 'on');               // Ensure user has location_status 'on'
+                // $latestHistory =  $query->select('lh.*', 'u.name', 'u.profile_pic')->get();       // Select necessary fields from both tables
 
-                $latestHistory =  $query->select('lh.*', 'u.name', 'u.profile_pic')->get();       // Select necessary fields from both tables
+                $query = DB::table('users as u')
+                    ->leftJoin(DB::raw('(
+                        SELECT lh1.*
+                        FROM location_history lh1
+                        INNER JOIN (
+                            SELECT user_id, MAX(id) as latest_id
+                            FROM location_history
+                            GROUP BY user_id
+                        ) latest_lh ON lh1.id = latest_lh.latest_id
+                    ) as lh'), 'u.id', '=', 'lh.user_id')
+                    ->whereIn('u.id', $join_user_ids)
+                    ->where('u.location_status', 'on')
+                    ->select('u.id as child_user_id', 'u.name', 'u.profile_pic', 'lh.*');
+                $latestHistory = $query->get();
             } else {
                 // Handle the case where there are no child_user_ids
                 $latestHistory = collect(); // Return an empty collection or handle it as needed
@@ -1384,34 +1398,18 @@ class ApiController extends BaseController
                 $remove_date  = DB::table('join_user')
                     ->where([
                         'parent_user_id' => $user->id,
-                        'child_user_id' => $item->user_id,
+                        'child_user_id' => $item->child_user_id,
                         'location_history_status' => 'is_removed',
                         'is_deleted' => 0
                     ])
                     // ->select('history_remove_start_date', 'history_remove_date')
                     ->pluck('history_remove_date')
                     ->first();
-
-                // dd($item->datetime ."   >=   ". $remove_date);
-                // if (!$remove_date || $item->datetime >= $remove_date) {
-
-                // Check if datetime is outside the removed range or if no removal exists
-                // $include = true;
-                // if ($removal) {
-                //     if ($item->datetime >= $removal->history_remove_start_date && $item->datetime <= $removal->history_remove_date) {
-                //         $include = false;
-                //     }
-                // }
-
-                // if ($include) {
-
-                // if ( $removal && $removal->history_remove_start_date && $removal->history_remove_date &&
-                //     ($item->datetime < $removal->history_remove_start_date || $item->datetime > $removal->history_remove_date)) 
-                // {
+                
                 if ($remove_date || $item->datetime >= $remove_date) {
                     $result[] = [
                         'id' => $item->id,
-                        'user_id' => $item->user_id,
+                        'user_id' => $item->child_user_id,
                         'user_name' => $item->name,
                         'phone_battery_status' => $item->phone_battery_status,
                         'profile_pic' => $item->profile_pic,
