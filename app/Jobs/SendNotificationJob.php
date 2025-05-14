@@ -32,15 +32,13 @@ class SendNotificationJob implements ShouldQueue
     {
         // \Log::info("SendNotificationJob is now running for parentUserId :" );
 
-        $parentUserIds = is_array($this->parentUserId) ? $this->parentUserId : [$this->parentUserId];
-
-        $notificationSendData['device_tokens'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
-        // $notificationSendData['notification_title'] = $this->noti_data['noti_title'];
-        // $notificationSendData['notification_description'] = $this->noti_data['noti_desc'];
-        // $notificationSendData['notification_image'] = $this->childUser->profile_pic ?? asset('public/assets/img/logo.png');
+        # multiple 
+        // $parentUserIds = is_array($this->parentUserId) ? $this->parentUserId : [$this->parentUserId];
+        // $notificationSendData['device_tokens'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
+        
+        $parentUserIds = $this->parentUserId ? $this->parentUserId : 0;
+        $notificationSendData['device_tokens'] = User::where('id', $parentUserIds)->pluck('player_id')->first();
         $notificationSendData['other_data'] = $this->noti_data;
-
-        // ApplicationNotificationModel::sendOneSignalNotificationSchedule($notificationSendData);
 
         ApplicationNotificationModel::sendFirebaseNotification($notificationSendData);
 
@@ -48,19 +46,27 @@ class SendNotificationJob implements ShouldQueue
         $noti_type = $this->noti_data['noti_type'];
         $msg = $this->noti_data['msg'];
         $noti_date = $this->noti_data['noti_date'];
+        $zone_id = array_key_exists('zone_id', $this->noti_data) ? $this->noti_data['zone_id'] : 0;
+        $zone_type = array_key_exists('zone_type', $this->noti_data) ? $this->noti_data['zone_type'] : 'other_noti';
+        $receiver_user_id = $this->parentUserId;
 
-        $notificationData = [];
-        foreach ($parentUserIds as $receiver_user_id) {
-            $notificationData[] = [
+        // $zone_type = $this->noti_data['zone_type'];
+
+        // $notificationData = [];
+        // foreach ($parentUserIds as $receiver_user_id) {
+            $notificationData = [
                 'sender_user_id' => $sender_user_id,
                 'receiver_user_id' => $receiver_user_id,
                 'title' => $msg,
                 'noti_type' => $noti_type,
                 'noti_date' => $noti_date,
+                'zone_id' => $zone_id,
+                'zone_type' => $zone_type,
             ];
-        }
+        // }
         DB::table('user_notifications')->insert($notificationData);
     }
+
 
     public function handle_single()
     {

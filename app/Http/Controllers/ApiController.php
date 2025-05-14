@@ -24,8 +24,47 @@ define('PACKAGE_NAME', 'com.l.fs');
 
 class ApiController extends BaseController
 {   
-   
+
+    private function zob_noti_test($childUser, $parentUserId, $noti_data)
+    {
+        // \Log::info("SendNotificationJob is now running for parentUserId :" );
+
+        $parentUserIds = is_array($parentUserId) ? $parentUserId : [$parentUserId];
+
+        $notificationSendData['device_tokens'] = User::whereIn('id', $parentUserIds)->pluck('player_id')->toArray();
+        $notificationSendData['other_data'] = $noti_data;
+
+        ApplicationNotificationModel::sendFirebaseNotification($notificationSendData);
+
+        $sender_user_id = $childUser->id;
+        $noti_type = $noti_data['noti_type'];
+        $msg = $noti_data['msg'];
+        $noti_date = $noti_data['noti_date'];
+        $zone_id = array_key_exists('zone_id', $this->noti_data) ? $this->noti_data['zone_id'] : 0;
+        $zone_type = array_key_exists('zone_type', $this->noti_data) ? $this->noti_data['zone_type'] : 'other_noti';
+
+        Log::info('zone noti :', ['user_id' => $sender_user_id,'zone_type'=>$zone_type]);
+
+        $notificationData = [];
+        foreach ($parentUserIds as $receiver_user_id) {
+            $notificationData[] = [
+                'sender_user_id' => $sender_user_id,
+                'receiver_user_id' => $receiver_user_id,
+                'title' => $msg,
+                'noti_type' => $noti_type,
+                'noti_date' => $noti_date,
+                'zone_id' => $zone_id,
+                'zone_type' => $zone_type,
+            ];
+        }
+        DB::table('user_notifications')->insert($notificationData);
+    }
+
     # multiple location data store from array
+    # inside_safe_zone  = safe_zone
+    # outside_safe_zone = red_zone/ outside_zone
+    # outside_red_zone  = safe_zone
+    # inside_red_zone   = red_zone / outside_zone
     public function update_location(Request $request)  # Queue notification (outside zone,safe zone)
     {
         try {
@@ -86,7 +125,9 @@ class ApiController extends BaseController
                 ]);
 
                 unset($data['today_date']);
-                LocationHistoryModel::create($data);
+                // LocationHistoryModel::create($data);
+
+
                 // Log::info('Location saved to database', ['user_id' => $user->id]);
 
                 # Update user status
@@ -99,40 +140,191 @@ class ApiController extends BaseController
                 # ZONE NOTIFICATION ZONE DATA
                 $safeZones = SafeZoneModel::where(['child_user_id' => $user->id,'noti_status' => 'on'])->get();
                 if ($safeZones->isNotEmpty()) {
-                    $parentUserId = []; 
-                    $safeParentUserId = [];
+
+                    $outside_red_zone_ids = $inside_red_zone_ids = $outside_safe_zone_ids = $inside_safe_zone_ids = []; 
+                    $sender_user_id = $user->id;
 
                     foreach ($safeZones as $safeZone) {
-                        $distance = $this->haversineGreatCircleDistanceZone(
+                        $distanceInMeters = $this->haversineGreatCircleDistanceZone(
                             $safeZone->zone_lattitude,  
                             $safeZone->zone_longitude,  
                             $location['lattitude'],
                             $location['longitude']
                         );
+                        // Convert km to meters
+                        $distance = $distanceInMeters * 1000;
+                        $zone_type = $safeZone->zone_type;
+                        $user_zone = $safeZone->user_zone;
+                        $receiver_user_id = $safeZone->parent_user_id;
+                        $zone_id = $safeZone->id;
+                        // Log::info('zone noti :', ['user_id' => $user->id,'distanceKiloMeters'=>$distanceInMeters,'distance'=>$distance, 'zone_meter'=> $safeZone->zone_meter]);
                         
-                        # OUTSIDE ZONE USERS 
-                        if ($distance > ($safeZone->zone_meter)) {
-                            // $parentUserId[] = User::where('id',$safeZone->parent_user_id)->pluck('id')->first(); 
-                            $parentUserId[] = $safeZone->parent_user_id; 
+                        if($zone_type === "red_zone"){
                             
-                            SafeZoneModel::where(['parent_user_id'=> $safeZone->parent_user_id, 'child_user_id'=>$user->id])->update(['user_zone'=>'outside_zone']);
-                        }
-                        
-                        # INSIDE SAFE ZONE USERS
-                        $lastZoneStatus = SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->value('user_zone');
-                        if ($distance <= $safeZone->zone_meter) {
-
-                            // If user was previously outside, now update status to "safe_zone"
-                            if ($lastZoneStatus === 'outside_zone') {
-                                $safeParentUserId[] = $safeZone->parent_user_id;
-                                SafeZoneModel::where(['parent_user_id' => $safeZone->parent_user_id,'child_user_id' => $user->id])->update(['user_zone' => 'safe_zone']);
+                            # check user going inside to outside red zone noti, if outside red zone noti sended then dont send again = safe zone 
+                            $outside_red_zone_noti_check = DB::table('user_notifications')->where(['sender_user_id'=> $sender_user_id,'receiver_user_id'=> $receiver_user_id,'zone_id'=>$zone_id,'zone_type'=>'outside_red_zone'])->orderBy('id','desc')->first();
+                            // if ($distance > $safeZone->zone_meter  && ($user_zone == NULL || Empty($user_zone) || $user_zone == 'inside_red_zone') && (empty($outside_red_zone_noti_check))) {
+                            if ($distance > $safeZone->zone_meter && empty($outside_red_zone_noti_check)) {
+        
+                                $noti_data = [
+                                    'sender_user_id' => $sender_user_id,
+                                    'sender_name' => $user->name,
+                                    'sender_profile' => $user->profile_pic,
+                                    'noti_date' => $location['today_date'],
+                                    'msg'              => "Alert: User exited the restricted red zone!",
+                                    'noti_type'        => "outside_red_zone",
+                                    'noti_title'       => "Red Zone Exit Alert",
+                                    'noti_desc'        => "{$user->name} has exited the restricted red zone.",
+                                    'zone_type' => 'outside_red_zone',
+                                    'zone_id' => $zone_id,
+                                ];
+                                // $this->zob_noti_test($user, $receiver_user_id, $noti_data);  // testing purpose
+                                SendNotificationJob::dispatch($user, $receiver_user_id, $noti_data);
+                                
+                                // $outside_red_zone_ids[$receiver_user_id] = $zone_id;
+                                // $outside_red_zone_ids[] = $receiver_user_id; 
+                                // SafeZoneModel::where(['zone_id'=>$zone_id])->update(['user_zone'=>'outside_red_zone']);
+                            }
+                           
+                            # check user going inside to outside red zone , if inside red zone noti sended then dont send again = # red zone - outside_zone
+                            $inside_red_zone_noti_check = DB::table('user_notifications')->where(['sender_user_id'=> $sender_user_id,'receiver_user_id'=> $receiver_user_id,'zone_id'=>$zone_id,'zone_type'=>'inside_red_zone'])->orderBy('id','desc')->first();
+                            if ($distance <= $safeZone->zone_meter && empty($inside_red_zone_noti_check)) {
+        
+                                $noti_data = [
+                                    'sender_user_id' => $sender_user_id,
+                                    'sender_name' => $user->name,
+                                    'sender_profile' => $user->profile_pic,
+                                    'noti_date' => $location['today_date'],
+                                    'msg'              => "Alert: Restricted area breach detected!",
+                                    'noti_type'        => "inside_red_zone",
+                                    'noti_title'       => "Restricted Zone Entry",
+                                    'noti_desc'        => "{$user->name} has entered the restricted red zone.",
+                                    'zone_type' => 'inside_red_zone',
+                                    'zone_id' => $zone_id,
+                                ];
+                                // $this->zob_noti_test($user, $receiver_user_id, $noti_data);  // testing purpose
+                                SendNotificationJob::dispatch($user, $receiver_user_id,$noti_data);
+                                
+                                // $inside_red_zone_ids[$receiver_user_id] = $zone_id;
+                                // $inside_red_zone_ids[] = $receiver_user_id; 
                             }
                         }
+                        if($zone_type === "safe_zone"){
+                            
+                            # check user going inside to outside safe zone noti, if outside safe zone noti sended then dont send again = # red zone - outside_zone
+                            $outside_safe_zone_noti_check = DB::table('user_notifications')->where(['sender_user_id'=> $sender_user_id,'receiver_user_id'=> $receiver_user_id,'zone_id'=>$zone_id,'zone_type'=>'outside_safe_zone'])->orderBy('id','desc')->first();
+                            if ($distance > $safeZone->zone_meter && empty($outside_safe_zone_noti_check)) {
+        
+                                // $outside_safe_zone_ids[$receiver_user_id] = $zone_id;
+                                // $outside_safe_zone_ids[] = $receiver_user_id; 
+                                $noti_data = [
+                                    'sender_user_id' => $sender_user_id,
+                                    'sender_name' => $user->name,
+                                    'sender_profile' => $user->profile_pic,
+                                    'noti_date' => $location['today_date'],
+                                    'msg'              => "Notice: User left the safe zone.",
+                                    'noti_type'        => "outside_safe_zone",
+                                    'noti_title'       => "Safe Zone Exit",
+                                    'noti_desc'        => "{$user->name} has exited the designated safe area.",
+                                    'zone_type' => 'outside_safe_zone',
+                                    'zone_id' => $zone_id,
+                                ];
+                                // $this->zob_noti_test($user, $receiver_user_id, $noti_data);  // testing purpose
+                                SendNotificationJob::dispatch($user, $receiver_user_id, $noti_data);
+                            }
+                           
+                            # check user going inside to outside safe zone , if inside safe zone noti sended then dont send again = safe zone 
+                            $inside_safe_zone_noti_check = DB::table('user_notifications')->where(['sender_user_id'=> $sender_user_id,'receiver_user_id'=> $receiver_user_id,'zone_id'=>$zone_id,'zone_type'=>'inside_safe_zone'])->orderBy('id','desc')->first();
+                            if ($distance <= $safeZone->zone_meter && empty($inside_safe_zone_noti_check)) {
+        
+                                // $inside_safe_zone_ids[$receiver_user_id] = $zone_id;
+                                // $inside_safe_zone_ids[] = $receiver_user_id; 
+                                $noti_data = [
+                                    'sender_user_id' => $sender_user_id,
+                                    'sender_name' => $user->name,
+                                    'sender_profile' => $user->profile_pic,
+                                    'noti_date' => $location['today_date'],
+                                    'msg'              => "User re-entered the safe zone.",
+                                    'noti_type'        => "inside_safe_zone",
+                                    'noti_title'       => "Safe Zone Re-entry",
+                                    'noti_desc'        => "{$user->name} has returned to the designated safe area.",
+                                    'zone_type' => 'inside_safe_zone',
+                                    'zone_id' => $zone_id,
+                                ];
+                                // $this->zob_noti_test($user, $inside_sareceiver_user_idfe_zone_ids, $noti_data);  // testing purpose
+                                SendNotificationJob::dispatch($user, $receiver_user_id,$noti_data);
+                            }
+                        }
+                        // old code
                     }
                 
+                    /* if (!empty($outside_red_zone_ids)) {   # safe zone 
+                        $noti_data = [
+                            'sender_user_id' => $sender_user_id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg'              => "Alert: User exited the restricted red zone!",
+                            'noti_type'        => "outside_red_zone",
+                            'noti_title'       => "Red Zone Exit Alert",
+                            'noti_desc'        => "{$user->name} has exited the restricted red zone.",
+                            'zone_type' => 'outside_red_zone',
+                            'zone_id' => $zone_id,
+                        ];
+                        $this->zob_noti_test($user, $inside_safe_zone_ids, $title, $noti_data);  // testing purpose
+                        // SendNotificationJob::dispatch($user, $outside_red_zone_ids, $noti_data);
+                    }
+                    if (!empty($inside_red_zone_ids)) {  # red zone - outside_zone
+                        $noti_data = [
+                            'sender_user_id' => $sender_user_id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg'              => "Alert: Restricted area breach detected!",
+                            'noti_type'        => "inside_red_zone",
+                            'noti_title'       => "Restricted Zone Entry",
+                            'noti_desc'        => "{$user->name} has entered the restricted red zone.",
+                            'zone_type' => 'inside_red_zone',
+                            'zone_id' => $zone_id,
+                        ];
+                        $this->zob_noti_test($user, $inside_red_zone_ids, $title, $noti_data);  // testing purpose
+                        // SendNotificationJob::dispatch($user, $inside_red_zone_ids,$noti_data);
+                    } 
+                    if (!empty($outside_safe_zone_ids)) {   # red zone - outside_zone
+                        $noti_data = [
+                            'sender_user_id' => $sender_user_id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg'              => "Notice: User left the safe zone.",
+                            'noti_type'        => "outside_safe_zone",
+                            'noti_title'       => "Safe Zone Exit",
+                            'noti_desc'        => "{$user->name} has exited the designated safe area.",
+                            'zone_type' => 'outside_safe_zone',
+                            'zone_id' => $zone_id,
+                        ];
+                         $this->zob_noti_test($user, $inside_safe_zone_ids, $title, $noti_data);  // testing purpose
+                        // SendNotificationJob::dispatch($user, $outside_safe_zone_ids, $noti_data);
+                    }
+                    if (!empty($inside_safe_zone_ids)) {  # safe zone
+                        $noti_data = [
+                            'sender_user_id' => $sender_user_id,
+                            'sender_name' => $user->name,
+                            'sender_profile' => $user->profile_pic,
+                            'noti_date' => $location['today_date'],
+                            'msg'              => "User re-entered the safe zone.",
+                            'noti_type'        => "inside_safe_zone",
+                            'noti_title'       => "Safe Zone Re-entry",
+                            'noti_desc'        => "{$user->name} has returned to the designated safe area.",
+                            'zone_type' => 'inside_safe_zone',
+                            'zone_id' => $zone_id,
+                        ];
+                        $this->zob_noti_test($user, $inside_safe_zone_ids, $title, $noti_data);  // testing purpose
+                        // SendNotificationJob::dispatch($user, $inside_safe_zone_ids,$noti_data);
+                    } */
+
                     // $safeParentUserId = [7,8]; // testing
-                    
-                    if (!empty($safeParentUserId)) {
+                    /* if (!empty($safeParentUserId)) {
                         $noti_data = [
                             'sender_user_id' => $user->id,
                             'sender_name' => $user->name,
@@ -145,7 +337,6 @@ class ApiController extends BaseController
                         ];
                         SendNotificationJob::dispatch($user, $safeParentUserId, $noti_data);
                     }
-                    
                     if (!empty($parentUserId)) {
                         $noti_data = [
                             'sender_user_id' => $user->id,
@@ -159,7 +350,7 @@ class ApiController extends BaseController
                         ];
                         // $this->zone_noti($user, $parentUserId, $title, $noti_data);  // testing purpose
                         SendNotificationJob::dispatch($user, $parentUserId,$noti_data);
-                    }
+                    } */
                 }
             }
 

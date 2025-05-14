@@ -190,7 +190,7 @@ class AuthController extends BaseController
             
             
             // dd($token);
-            Log::info('refresh token before....', ['old_token'=>$old_token]);
+            // Log::info('refresh token before....', ['old_token'=>$old_token]);
             
             $user = User::where('remember_token',$old_token)->first();
             if (!$user) {
@@ -224,7 +224,7 @@ class AuthController extends BaseController
             $tokenString = $request->header('Authorization');
             $old_token = str_replace('Bearer ', '', $tokenString);
             
-            Log::info('exipred token before....', ['old_token'=>$old_token]);
+            // Log::info('exipred token before....', ['old_token'=>$old_token]);
             $user = User::where('remember_token',$old_token)->first();
             if (!$user) {
                 return $this->sendError('Expired token,User not found.', 401);
